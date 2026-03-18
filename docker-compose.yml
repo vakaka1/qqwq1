@@ -1,0 +1,42 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: sqlite:////app/data/app.db
+      AUTO_CREATE_TABLES: "false"
+      PUBLIC_APP_URL: http://localhost:8000
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/data:/app/data
+    restart: unless-stopped
+
+  bot:
+    build:
+      context: .
+      dockerfile: bot/Dockerfile
+    env_file:
+      - .env
+    environment:
+      BACKEND_BASE_URL: http://backend:8000/api/v1
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  frontend:
+    profiles: ["dev"]
+    image: node:20-alpine
+    working_dir: /workspace/frontend
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    environment:
+      VITE_API_BASE_URL: http://localhost:8000/api/v1
+    volumes:
+      - ./frontend:/workspace/frontend
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
