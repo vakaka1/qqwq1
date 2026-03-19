@@ -1,22 +1,35 @@
+import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 
+import { apiRequest } from "../api/http";
 import { useAuth } from "../features/auth/AuthProvider";
+import type { SystemSettings } from "../lib/types";
 
 const navItems = [
   { to: "/", label: "Обзор" },
   { to: "/servers", label: "Серверы" },
+  { to: "/sites", label: "Сайты" },
   { to: "/accesses", label: "Доступы" },
   { to: "/bots", label: "Боты" },
   { to: "/users", label: "Пользователи" },
   { to: "/admins", label: "Администраторы" },
+  { to: "/monetization", label: "Монетизация" },
+  { to: "/settings", label: "Настройки" },
   { to: "/logs", label: "Журнал" }
 ];
 
 export function AppShell() {
-  const { admin, logout } = useAuth();
+  const { admin, logout, token } = useAuth();
   const location = useLocation();
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const { data: systemSettings } = useQuery({
+    queryKey: ["system-settings"],
+    queryFn: () => apiRequest<SystemSettings>("/system-settings/", {}, token),
+    enabled: Boolean(token),
+    staleTime: 30000
+  });
+  const appName = systemSettings?.app_name ?? "Панель управления";
 
   useEffect(() => {
     setIsSidebarOpen(false);
@@ -36,7 +49,7 @@ export function AppShell() {
             <span className="brand-mark" aria-hidden="true">
               <span />
             </span>
-            <h1>Панель управления</h1>
+            <h1>{appName}</h1>
           </div>
           <nav className="nav-list">
             {navItems.map((item) => (
@@ -76,7 +89,7 @@ export function AppShell() {
             <span />
           </button>
           <div className="mobile-toolbar__title">
-            <strong>Панель управления</strong>
+            <strong>{appName}</strong>
             <span>{admin?.username}</span>
           </div>
         </div>

@@ -48,6 +48,42 @@ export function BotsPage() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingBot, setEditingBot] = useState<ManagedBot | null>(null);
   const [form, setForm] = useState<BotFormState>(emptyForm);
+  const [isMailingModalOpen, setIsMailingModalOpen] = useState(false);
+  const [mailingBot, setMailingBot] = useState<ManagedBot | null>(null);
+  const [mailingText, setMailingText] = useState("");
+  const [mailingImageFile, setMailingImageFile] = useState<File | null>(null);
+
+  const closeMailingModal = () => {
+    setIsMailingModalOpen(false);
+    setMailingBot(null);
+    setMailingText("");
+    setMailingImageFile(null);
+  };
+
+  const mailingMutation = useMutation({
+    mutationFn: () => {
+      const formData = new FormData();
+      formData.append("text", mailingText.trim());
+      if (mailingImageFile) {
+        formData.append("image", mailingImageFile);
+      }
+      return apiRequest<{ message: string }>(
+        `/bots/${mailingBot?.id}/mailing`,
+        {
+          method: "POST",
+          body: formData
+        },
+        token
+      );
+    },
+    onSuccess: (result) => {
+      pushToast(result.message, "success");
+      closeMailingModal();
+    },
+    onError: (error) => {
+      pushToast(error instanceof ApiError ? error.message : "Не удалось отправить рассылку", "danger");
+    }
+  });
 
   const { data: bots, isLoading } = useQuery({
     queryKey: ["bots"],
@@ -166,6 +202,18 @@ export function BotsPage() {
                 <button
                   className="ghost-button"
                   onClick={() => {
+                    setMailingBot(bot);
+                    setMailingText("");
+                    setMailingImageFile(null);
+                    setIsMailingModalOpen(true);
+                  }}
+                  type="button"
+                >
+                  Рассылка
+                </button>
+                <button
+                  className="ghost-button"
+                  onClick={() => {
                     setEditingBot(bot);
                     setForm(toForm(bot));
                     setIsModalOpen(true);
@@ -261,6 +309,53 @@ export function BotsPage() {
               </button>
               <button className="primary-button" disabled={saveMutation.isPending} type="submit">
                 {saveMutation.isPending ? "Сохраняем..." : "Сохранить"}
+              </button>
+            </div>
+          </form>
+        </Modal>
+      ) : null}
+
+      {isMailingModalOpen ? (
+        <Modal title={`Рассылка: ${mailingBot?.name}`} onClose={closeMailingModal}>
+          <form
+            className="form-grid"
+            onSubmit={(event) => {
+              event.preventDefault();
+              mailingMutation.mutate();
+            }}
+          >
+            <label className="full-width">
+              <span>Текст сообщения</span>
+              <textarea
+                rows={6}
+                value={mailingText}
+                onChange={(event) => setMailingText(event.target.value)}
+                placeholder="Текст рассылки..."
+                required
+              />
+              <small className="field-meta">Сообщение будет отправлено всем пользователям этого бота.</small>
+            </label>
+
+            <label className="full-width">
+              <span>Изображение</span>
+              <input
+                accept="image/*"
+                onChange={(event) => setMailingImageFile(event.target.files?.[0] ?? null)}
+                type="file"
+              />
+              <small className="field-meta">
+                {mailingImageFile
+                  ? `Выбран файл: ${mailingImageFile.name}`
+                  : "Необязательно. Файл будет отправлен в Telegram и не сохраняется в проекте."}
+              </small>
+            </label>
+
+            <div className="modal-footer">
+              <button className="secondary-button" onClick={closeMailingModal} type="button">
+                Отмена
+              </button>
+              <button className="primary-button" disabled={mailingMutation.isPending} type="submit">
+                {mailingMutation.isPending ? "Отправляем..." : "Отправить рассылку"}
               </button>
             </div>
           </form>

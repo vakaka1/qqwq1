@@ -16,6 +16,7 @@ class ManagedBotRuntimeConfig:
     name: str
     product_code: str
     telegram_token: str
+    webhook_base_url: str | None = None
     telegram_bot_username: str | None = None
     welcome_text: str | None = None
     help_text: str | None = None

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
+from cryptography.fernet import InvalidToken
 
 from app.core.security import decrypt_secret, encrypt_secret
 from app.models.managed_bot import ManagedBot
@@ -15,7 +17,10 @@ from app.schemas.managed_bot import (
 )
 from app.services.audit import AuditService
 from app.services.exceptions import ServiceError
+from app.services.system_settings import load_effective_system_settings
 from app.utils.naming import build_unique_slug, slugify_identifier
+
+logger = logging.getLogger(__name__)
 
 
 class ManagedBotService:
@@ -113,6 +118,22 @@ class ManagedBotService:
 
     def delete_bot(self, managed_bot_id: str, actor_id: str | None = None) -> None:
         managed_bot = self.get_or_404(managed_bot_id)
+        
+        # Проверка зависимостей
+        from sqlalchemy import func, select
+        from app.models.site import Site
+        from app.models.vpn_access import VpnAccess
+        
+        # Проверяем сайты
+        sites_count = self.db.scalar(select(func.count()).select_from(Site).where(Site.managed_bot_id == managed_bot.id))
+        if sites_count > 0:
+            raise ServiceError(f"Нельзя удалить бота, так как к нему привязано {sites_count} сайт(ов). Сначала удалите сайты или привяжите их к другому боту.", 409)
+            
+        # Проверяем доступы (не удаленные)
+        accesses_count = self.db.scalar(select(func.count()).select_from(VpnAccess).where(VpnAccess.managed_bot_id == managed_bot.id, VpnAccess.status != "deleted"))
+        if accesses_count > 0:
+            raise ServiceError(f"Нельзя удалить бота, так как у него есть {accesses_count} активных или истекших доступов. Сначала удалите доступы.", 409)
+
         self.repo.delete(managed_bot)
         self.audit.log(
             actor_type="admin",
@@ -127,10 +148,18 @@ class ManagedBotService:
 
     def list_runtime_bots(self) -> list[ManagedBotRuntimeRead]:
         result = []
+        settings = load_effective_system_settings(self.db)
+        webhook_base_url = settings.bot_webhook_base_url
+        
         for item in self.repo.list_active():
-            token = decrypt_secret(item.telegram_token_encrypted)
-            if not token:
+            try:
+                token = decrypt_secret(item.telegram_token_encrypted)
+                if not token:
+                    continue
+            except Exception:
+                logger.exception("Не удалось расшифровать токен для бота %s (код: %s). Возможно, APP_ENCRYPTION_KEY был изменен.", item.id, item.code)
                 continue
+                
             result.append(
                 ManagedBotRuntimeRead(
                     id=item.id,
@@ -138,6 +167,7 @@ class ManagedBotService:
                     name=item.name,
                     product_code=item.product_code,
                     telegram_token=token,
+                    webhook_base_url=webhook_base_url,
                     telegram_bot_username=item.telegram_bot_username,
                     welcome_text=item.welcome_text,
                     help_text=item.help_text,

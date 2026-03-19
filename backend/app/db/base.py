@@ -7,5 +7,7 @@ from app.models.admin import Admin  # noqa: E402,F401
 from app.models.audit_log import AuditLog  # noqa: E402,F401
 from app.models.managed_bot import ManagedBot  # noqa: E402,F401
 from app.models.server import Server  # noqa: E402,F401
+from app.models.site import Site  # noqa: E402,F401
+from app.models.system_settings import SystemSettings  # noqa: E402,F401
 from app.models.telegram_user import TelegramUser  # noqa: E402,F401
 from app.models.vpn_access import VpnAccess  # noqa: E402,F401

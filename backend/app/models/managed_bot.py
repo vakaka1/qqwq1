@@ -25,3 +25,4 @@ class ManagedBot(TimestampMixin, Base):
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     accesses = relationship("VpnAccess", back_populates="managed_bot")
+    sites = relationship("Site", back_populates="managed_bot")

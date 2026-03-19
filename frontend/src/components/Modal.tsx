@@ -20,4 +20,3 @@ export function Modal({ title, onClose, children }: ModalProps) {
     </div>
   );
 }
-

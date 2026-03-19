@@ -40,7 +40,7 @@ class Server(TimestampMixin, Base):
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     tags: Mapped[list[str]] = mapped_column(JSON, default=list)
-    capabilities: Mapped[list[str]] = mapped_column(JSON, default=lambda: ["telegram-config"])
+    capabilities: Mapped[list[str]] = mapped_column(JSON, default=lambda: ["telegram-config", "site"])
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     accesses = relationship("VpnAccess", back_populates="server")

@@ -7,23 +7,27 @@ from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
-from app.config.settings import get_settings
 from app.integrations.three_x_ui.exceptions import ThreeXUIError
 from app.integrations.three_x_ui.factory import build_three_x_ui_adapter
 from app.models.enums import AccessStatus, AccessType, UserStatus
 from app.models.managed_bot import ManagedBot
 from app.models.server import Server
+from app.models.site import Site
 from app.models.telegram_user import TelegramUser
 from app.models.vpn_access import VpnAccess
 from app.repositories.managed_bot import ManagedBotRepository
 from app.repositories.server import ServerRepository
+from app.repositories.site import SiteRepository
 from app.repositories.telegram_user import TelegramUserRepository
 from app.repositories.vpn_access import VpnAccessRepository
 from app.schemas.bot import BotTrialResponse, BotUserRead
+from app.schemas.site import SiteRuntimeConfigResponse
 from app.schemas.vpn_access import AccessConfigRead, AccessCreateRequest, AccessRead
 from app.services.audit import AuditService
+from app.services.bot_messenger import BotMessengerService
 from app.services.config_generator import ConfigGenerator
 from app.services.exceptions import ServiceError
+from app.services.system_settings import load_effective_system_settings
 from app.utils.naming import build_connection_alias, slugify_identifier
 from app.utils.serialization import datetime_to_millis, parse_json_field
 
@@ -31,13 +35,26 @@ from app.utils.serialization import datetime_to_millis, parse_json_field
 class VpnAccessService:
     def __init__(self, db: Session) -> None:
         self.db = db
-        self.settings = get_settings()
         self.users = TelegramUserRepository(db)
         self.managed_bots = ManagedBotRepository(db)
         self.servers = ServerRepository(db)
+        self.sites = SiteRepository(db)
         self.accesses = VpnAccessRepository(db)
         self.audit = AuditService(db)
         self.generator = ConfigGenerator()
+        self.bot_messenger = BotMessengerService()
+
+    def _trial_duration_hours(self) -> int:
+        return load_effective_system_settings(self.db).trial_duration_hours
+
+    def _site_trial_duration_hours(self) -> int:
+        return load_effective_system_settings(self.db).site_trial_duration_hours
+
+    def _site_trial_total_gb(self) -> int:
+        return load_effective_system_settings(self.db).site_trial_total_gb
+
+    def _site_trial_total_bytes(self) -> int:
+        return self._site_trial_total_gb() * 1024 * 1024 * 1024
 
     def _get_or_create_user(
         self,
@@ -81,18 +98,49 @@ class VpnAccessService:
         self.db.flush()
         return user
 
+    def register_bot_user(self, user_id: int, bot_id: str) -> None:
+        from sqlalchemy import text
+        self.db.execute(
+            text("INSERT OR IGNORE INTO bot_users (telegram_user_id, managed_bot_id) VALUES (:u, :b)"),
+            {"u": user_id, "b": bot_id}
+        )
+        self.db.flush()
+
     def _choose_trial_server(self, product_code: str) -> Server:
         candidates = self.servers.get_trial_candidates(product_code)
         if not candidates:
             raise ServiceError("Нет доступных серверов для выдачи теста", 409)
-        weights = [max(server.weight, 1) for server in candidates]
-        return choices(candidates, weights=weights, k=1)[0]
+        if len(candidates) == 1:
+            return candidates[0]
+
+        active_counts = self.accesses.get_active_trial_counts_by_server(
+            product_code=product_code,
+            server_ids=[server.id for server in candidates],
+        )
+
+        def normalized_load(server: Server) -> float:
+            weight = max(server.weight, 1)
+            return active_counts.get(server.id, 0) / weight
+
+        loads = {server.id: normalized_load(server) for server in candidates}
+        min_load = min(loads.values())
+        least_loaded = [server for server in candidates if loads[server.id] == min_load]
+        weights = [max(server.weight, 1) for server in least_loaded]
+        return choices(least_loaded, weights=weights, k=1)[0]
 
     def _resolve_managed_bot(self, bot_code: str) -> ManagedBot:
         managed_bot = self.managed_bots.get_by_code(bot_code)
         if not managed_bot or not managed_bot.is_active:
             raise ServiceError("Активный бот не найден", 404)
         return managed_bot
+
+    def _resolve_site(self, site_code: str) -> Site:
+        site = self.sites.get_by_code(site_code)
+        if not site:
+            raise ServiceError("Сайт не найден", 404)
+        if site.deployment_status != "deployed":
+            raise ServiceError("Сайт еще не развернут или находится в ошибке", 409)
+        return site
 
     def _build_remote_client_payload(
         self,
@@ -104,6 +152,7 @@ class VpnAccessService:
         device_limit: int,
         telegram_user_id: int | None,
         flow: str | None,
+        total_bytes: int = 0,
     ) -> dict:
         payload = {
             "id": client_uuid,
@@ -111,7 +160,7 @@ class VpnAccessService:
             "enable": True,
             "expiryTime": datetime_to_millis(expiry_at),
             "limitIp": device_limit,
-            "totalGB": 0,
+            "totalGB": total_bytes,
             "reset": 0,
             "tgId": str(telegram_user_id) if telegram_user_id else "",
             "subId": secrets.token_hex(8),
@@ -139,6 +188,7 @@ class VpnAccessService:
         *,
         user: TelegramUser | None,
         managed_bot: ManagedBot | None,
+        site: Site | None,
         server: Server,
         access_type: str,
         product_code: str,
@@ -147,10 +197,13 @@ class VpnAccessService:
         remote_client: dict,
         config_bundle: dict,
         inbound_snapshot: dict,
+        site_visitor_token: str | None = None,
+        extra_metadata: dict | None = None,
     ) -> VpnAccess:
         access = VpnAccess(
             telegram_user_id=user.id if user else None,
             managed_bot_id=managed_bot.id if managed_bot else None,
+            site_id=site.id if site else None,
             server_id=server.id,
             product_code=product_code,
             access_type=access_type,
@@ -161,6 +214,7 @@ class VpnAccessService:
             client_email=remote_client["email"],
             remote_client_id=remote_client["id"],
             client_sub_id=remote_client.get("subId"),
+            site_visitor_token=site_visitor_token,
             device_limit=device_limit,
             expiry_at=expiry_at,
             activated_at=datetime.now(timezone.utc),
@@ -170,6 +224,7 @@ class VpnAccessService:
                 "remote_client": remote_client,
                 "inbound_snapshot": inbound_snapshot,
                 "query": config_bundle.get("query", {}),
+                **(extra_metadata or {}),
             },
         )
         self.accesses.create(access)
@@ -233,7 +288,7 @@ class VpnAccessService:
 
         server = self._choose_trial_server(product_code)
         adapter = build_three_x_ui_adapter(server)
-        expiry_at = datetime.now(timezone.utc) + timedelta(hours=self.settings.trial_duration_hours)
+        expiry_at = datetime.now(timezone.utc) + timedelta(hours=self._trial_duration_hours())
         client_uuid = str(uuid4())
         email = self._build_remote_client_email(
             server=server,
@@ -274,6 +329,7 @@ class VpnAccessService:
         access = self._create_access_record(
             user=user,
             managed_bot=managed_bot,
+            site=None,
             server=server,
             access_type=AccessType.TEST.value,
             product_code=product_code,
@@ -312,6 +368,136 @@ class VpnAccessService:
             expires_at=access.expiry_at,
             server_name=server.name,
         )
+
+    def _to_site_runtime_response(self, *, site: Site, access: VpnAccess) -> SiteRuntimeConfigResponse:
+        expiry_label = access.expiry_at.astimezone(timezone.utc).strftime("%d.%m.%Y %H:%M UTC")
+        return SiteRuntimeConfigResponse(
+            message="Конфиг сайта готов",
+            site_code=site.code,
+            site_name=site.name,
+            access_id=access.id,
+            config_uri=access.config_uri or "",
+            config_text=access.config_text or "",
+            expires_at=access.expiry_at,
+            expires_at_label=expiry_label,
+            server_name=access.server.name,
+            product_code=access.product_code,
+        )
+
+    def request_site_trial(
+        self,
+        *,
+        site_code: str,
+        visitor_token: str,
+        client_ip: str | None,
+        user_agent: str | None,
+    ) -> SiteRuntimeConfigResponse:
+        normalized_token = visitor_token.strip()
+        if len(normalized_token) < 8:
+            raise ServiceError("Некорректный visitor token", 400)
+
+        site = self._resolve_site(site_code)
+        active_access = self.accesses.get_latest_active_for_site_visitor(site.id, normalized_token)
+        if active_access:
+            if self._regenerate_access_config(active_access):
+                self.db.commit()
+                self.db.refresh(active_access)
+            return self._to_site_runtime_response(site=site, access=active_access)
+
+        if self.accesses.has_trial_for_site_visitor(site.id, normalized_token):
+            raise ServiceError("Для этого посетителя тестовый доступ уже был выдан ранее", 409)
+
+        product_code = "site"
+        server = self._choose_trial_server(product_code)
+        adapter = build_three_x_ui_adapter(server)
+        expiry_at = datetime.now(timezone.utc) + timedelta(hours=self._site_trial_duration_hours())
+        site_trial_total_gb = self._site_trial_total_gb()
+        site_trial_total_bytes = self._site_trial_total_bytes()
+        client_uuid = str(uuid4())
+        email = self._build_remote_client_email(
+            server=server,
+            product_code=product_code,
+            email_root=f"{site.code}-{normalized_token[:12]}",
+            client_uuid=client_uuid,
+        )
+        remote_client = self._build_remote_client_payload(
+            server=server,
+            email=email,
+            client_uuid=client_uuid,
+            expiry_at=expiry_at,
+            device_limit=1,
+            telegram_user_id=None,
+            flow=server.client_flow,
+            total_bytes=site_trial_total_bytes,
+        )
+        try:
+            inbound = adapter.get_inbound(server.inbound_id)
+            adapter.add_client(server.inbound_id, remote_client)
+        except ThreeXUIError as exc:
+            self.audit.log(
+                actor_type="system",
+                event_type="site_trial_issue_failed",
+                entity_type="site",
+                entity_id=site.id,
+                level="error",
+                message=f"Ошибка выдачи сайта {site.name}",
+                payload={"error": str(exc), "server_id": server.id, "site_code": site.code},
+            )
+            self.db.commit()
+            raise ServiceError(f"Не удалось создать клиента в 3x-ui: {exc}", 502) from exc
+
+        access_stub = VpnAccess(
+            product_code=product_code,
+            client_uuid=client_uuid,
+            client_email=email,
+            expiry_at=expiry_at,
+        )
+        config_bundle = self.generator.generate_vless(
+            server=server,
+            access=access_stub,
+            inbound=inbound,
+            client_payload=remote_client,
+        )
+        access = self._create_access_record(
+            user=None,
+            managed_bot=None,
+            site=site,
+            server=server,
+            access_type=AccessType.TEST.value,
+            product_code=product_code,
+            device_limit=1,
+            expiry_at=expiry_at,
+            remote_client=remote_client,
+            config_bundle=config_bundle,
+            inbound_snapshot=inbound,
+            site_visitor_token=normalized_token,
+            extra_metadata={
+                "issued_via": "site",
+                "site_id": site.id,
+                "site_code": site.code,
+                "client_ip": client_ip,
+                "user_agent": user_agent,
+                "traffic_limit_gb": site_trial_total_gb,
+            },
+        )
+        self.audit.log(
+            actor_type="system",
+            event_type="site_trial_issued",
+            entity_type="vpn_access",
+            entity_id=access.id,
+            message=f"Выдан site-доступ для сайта {site.name}",
+            payload={
+                "site_id": site.id,
+                "site_code": site.code,
+                "server_id": server.id,
+                "visitor_token": normalized_token[:12],
+                "product_code": product_code,
+                "traffic_limit_gb": site_trial_total_gb,
+            },
+        )
+        self.db.commit()
+        self.db.refresh(access)
+        return self._to_site_runtime_response(site=site, access=access)
 
     def create_manual_access(self, payload: AccessCreateRequest, actor_id: str | None = None) -> AccessRead:
         server = self.servers.get(payload.server_id)
@@ -370,6 +556,7 @@ class VpnAccessService:
         access = self._create_access_record(
             user=user,
             managed_bot=managed_bot,
+            site=None,
             server=server,
             access_type=payload.access_type,
             product_code=product_code,
@@ -569,6 +756,16 @@ class VpnAccessService:
             access.status = AccessStatus.EXPIRED.value
             access.deactivated_at = now
             self._refresh_user_status(access.telegram_user)
+            
+            # Отправка уведомления пользователю
+            if access.telegram_user and access.managed_bot:
+                text = (
+                    f"⚠️ *Доступ истек*\n\n"
+                    f"Ваша подписка на сервере *{access.server.name}* завершена.\n"
+                    "Для продления, пожалуйста, воспользуйтесь меню бота."
+                )
+                self.bot_messenger.send_message_sync(access.managed_bot.code, access.telegram_user.telegram_user_id, text)
+
             self.audit.log(
                 actor_type="system",
                 event_type="access_expired",
@@ -582,3 +779,63 @@ class VpnAccessService:
         if touched:
             self.db.commit()
         return processed
+
+    def notify_approaching_expiration(self) -> int:
+        now = datetime.now(timezone.utc)
+        items = self.accesses.list_approaching_expiration(now, window_hours=24)
+        processed = 0
+        for access in items:
+            metadata = dict(access.config_metadata or {})
+            if metadata.get("expiration_notified"):
+                continue
+            
+            text = (
+                f"⏳ *Ваш доступ скоро истечет*\n\n"
+                f"Подписка на сервере *{access.server.name}* истекает "
+                f"*{access.expiry_at.strftime('%d.%m.%Y %H:%M')} UTC*.\n"
+                "Рекомендуем продлить заранее, чтобы не потерять связь!"
+            )
+            success = self.bot_messenger.send_message_sync(
+                access.managed_bot.code, 
+                access.telegram_user.telegram_user_id, 
+                text
+            )
+            if success:
+                metadata["expiration_notified"] = True
+                access.config_metadata = metadata
+                processed += 1
+        
+        if processed > 0:
+            self.db.commit()
+        return processed
+
+    def send_mass_mailing(
+        self,
+        bot_code: str,
+        text: str,
+        image_url: str | None = None,
+        image_bytes: bytes | None = None,
+        image_filename: str | None = None,
+    ) -> int:
+        managed_bot = self._resolve_managed_bot(bot_code)
+        from sqlalchemy import text as sql_text
+
+        stmt = sql_text("""
+            SELECT DISTINCT tu.telegram_user_id
+            FROM telegram_users tu
+            LEFT JOIN bot_users bu ON tu.id = bu.telegram_user_id
+            LEFT JOIN vpn_accesses va ON tu.id = va.telegram_user_id
+            WHERE bu.managed_bot_id = :bot_id OR va.managed_bot_id = :bot_id
+        """)
+        
+        results = self.db.execute(stmt, {"bot_id": managed_bot.id}).all()
+        chat_ids = [row.telegram_user_id for row in results if row.telegram_user_id]
+        return self.bot_messenger.send_bulk_message_sync(
+            managed_bot.code,
+            chat_ids,
+            text,
+            image_url=image_url,
+            image_bytes=image_bytes,
+            image_filename=image_filename,
+            parse_mode="Markdown",
+        )

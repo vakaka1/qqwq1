@@ -1,7 +1,6 @@
 import type { ApiErrorPayload } from "../lib/types";
 
-const fallbackBase = `${window.location.origin}/api/v1`;
-const apiBase = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? fallbackBase;
+const apiBase = (import.meta.env.VITE_API_BASE_URL as string | undefined) || "/api/v1";
 
 export class ApiError extends Error {
   status: number;
@@ -19,7 +18,7 @@ export async function apiRequest<T>(
   token?: string | null
 ): Promise<T> {
   const headers = new Headers(init.headers);
-  if (!headers.has("Content-Type") && init.body) {
+  if (!headers.has("Content-Type") && init.body && !(init.body instanceof FormData)) {
     headers.set("Content-Type", "application/json");
   }
   if (token) {
@@ -36,4 +35,3 @@ export async function apiRequest<T>(
   }
   return (await response.json()) as T;
 }
-

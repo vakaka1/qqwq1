@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{{SERVICE_NAME}}</title>
+  <style>
+    :root {
+      --primary: #6366f1;
+      --secondary: #a855f7;
+      --bg-gradient: linear-gradient(135deg, #f5f7ff 0%, #e0e7ff 100%);
+      --glass: rgba(255, 255, 255, 0.7);
+      --glass-border: rgba(255, 255, 255, 0.4);
+      --text: #1e1b4b;
+      --muted: #475569;
+    }
+
+    * {
+      box-sizing: border-box;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    body {
+      margin: 0;
+      font-family: 'Plus Jakarta Sans', 'Inter', sans-serif;
+      background: var(--bg-gradient);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      overflow-x: hidden;
+      position: relative;
+    }
+
+    /* Background blobs */
+    .blob {
+      position: absolute;
+      width: 400px;
+      height: 400px;
+      background: linear-gradient(135deg, var(--primary), var(--secondary));
+      filter: blur(80px);
+      border-radius: 50%;
+      z-index: -1;
+      opacity: 0.15;
+    }
+    .blob-1 { top: -100px; right: -100px; }
+    .blob-2 { bottom: -100px; left: -100px; }
+
+    .card {
+      background: var(--glass);
+      backdrop-filter: blur(24px);
+      -webkit-backdrop-filter: blur(24px);
+      border: 1px solid var(--glass-border);
+      border-radius: 32px;
+      padding: 56px 40px;
+      max-width: 540px;
+      width: 100%;
+      text-align: center;
+      box-shadow: 0 24px 64px rgba(31, 38, 135, 0.1);
+    }
+
+    .icon-container {
+      width: 80px;
+      height: 80px;
+      background: white;
+      border-radius: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0 auto 32px;
+      box-shadow: 0 12px 24px rgba(99, 102, 241, 0.15);
+    }
+
+    .icon-container svg {
+      width: 40px;
+      height: 40px;
+      color: var(--primary);
+    }
+
+    h1 {
+      font-size: 34px;
+      font-weight: 800;
+      color: var(--text);
+      margin-bottom: 16px;
+      letter-spacing: -0.02em;
+    }
+
+    .subtitle {
+      font-size: 17px;
+      color: var(--muted);
+      line-height: 1.6;
+      margin-bottom: 40px;
+    }
+
+    .grid-info {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+      margin-bottom: 40px;
+    }
+
+    .info-box {
+      background: rgba(255, 255, 255, 0.4);
+      padding: 20px;
+      border-radius: 20px;
+      border: 1px solid var(--glass-border);
+    }
+
+    .info-label {
+      font-size: 13px;
+      font-weight: 600;
+      text-transform: uppercase;
+      color: var(--primary);
+      margin-bottom: 4px;
+      display: block;
+    }
+
+    .info-value {
+      font-size: 20px;
+      font-weight: 700;
+      color: var(--text);
+    }
+
+    .actions {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .btn {
+      height: 60px;
+      border-radius: 18px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      text-decoration: none;
+      font-weight: 700;
+      font-size: 17px;
+      transition: all 0.3s cubic-bezier(0.23, 1, 0.32, 1);
+    }
+
+    .btn-main {
+      background: linear-gradient(135deg, var(--primary), var(--secondary));
+      color: white;
+      box-shadow: 0 8px 16px rgba(99, 102, 241, 0.25);
+    }
+
+    .btn-main:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 12px 24px rgba(99, 102, 241, 0.35);
+    }
+
+    .btn-outline {
+      border: 2px solid var(--primary);
+      color: var(--primary);
+    }
+
+    .btn-outline:hover {
+      background: rgba(99, 102, 241, 0.05);
+    }
+
+    footer {
+      margin-top: 32px;
+      font-size: 13px;
+      color: var(--muted);
+      font-weight: 500;
+    }
+
+    @media (max-width: 480px) {
+      .card { padding: 40px 24px; }
+      h1 { font-size: 28px; }
+      .grid-info { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="blob blob-1"></div>
+  <div class="blob blob-2"></div>
+
+  <main class="card">
+    <div class="icon-container">
+      <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path>
+      </svg>
+    </div>
+
+    <h1>Твой ключ в Интернет</h1>
+    <p class="subtitle">
+      Быстрый протокол VLESS для неограниченного доступа к контенту. Работает на всех устройствах.
+    </p>
+
+    <div class="grid-info">
+      <div class="info-box">
+        <span class="info-label">Действует</span>
+        <span class="info-value">{{SITE_TRIAL_DURATION_HOURS}} часов</span>
+      </div>
+      <div class="info-box">
+        <span class="info-label">Лимит</span>
+        <span class="info-value">{{SITE_TRIAL_TOTAL_GB}} ГБ</span>
+      </div>
+    </div>
+
+    <div class="actions">
+      <a href="{{CONFIG_URL}}" class="btn btn-main">Получить конфиг</a>
+      <a href="{{TELEGRAM_URL}}" class="btn btn-outline">Наш Telegram-бот</a>
+    </div>
+  </main>
+</body>
+</html>

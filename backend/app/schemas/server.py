@@ -27,7 +27,7 @@ class ServerBase(BaseModel):
     is_trial_enabled: bool = True
     weight: int = Field(default=1, ge=1, le=100)
     tags: list[str] = Field(default_factory=list)
-    capabilities: list[str] = Field(default_factory=lambda: ["telegram-config"])
+    capabilities: list[str] = Field(default_factory=lambda: ["telegram-config", "site"])
     notes: str | None = None
 
 

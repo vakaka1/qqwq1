@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session, joinedload
@@ -24,6 +24,7 @@ class VpnAccessRepository:
                 joinedload(VpnAccess.server),
                 joinedload(VpnAccess.telegram_user),
                 joinedload(VpnAccess.managed_bot),
+                joinedload(VpnAccess.site),
             )
             .where(VpnAccess.id == access_id)
         )
@@ -41,6 +42,7 @@ class VpnAccessRepository:
             joinedload(VpnAccess.server),
             joinedload(VpnAccess.telegram_user),
             joinedload(VpnAccess.managed_bot),
+            joinedload(VpnAccess.site),
         )
         if server_id:
             stmt = stmt.where(VpnAccess.server_id == server_id)
@@ -62,6 +64,7 @@ class VpnAccessRepository:
                 joinedload(VpnAccess.server),
                 joinedload(VpnAccess.telegram_user),
                 joinedload(VpnAccess.managed_bot),
+                joinedload(VpnAccess.site),
             )
             .join(VpnAccess.telegram_user)
             .where(VpnAccess.telegram_user.has(telegram_user_id=telegram_user_id))
@@ -77,6 +80,7 @@ class VpnAccessRepository:
                 joinedload(VpnAccess.server),
                 joinedload(VpnAccess.telegram_user),
                 joinedload(VpnAccess.managed_bot),
+                joinedload(VpnAccess.site),
             )
             .join(VpnAccess.telegram_user)
             .where(
@@ -96,6 +100,7 @@ class VpnAccessRepository:
                 joinedload(VpnAccess.server),
                 joinedload(VpnAccess.telegram_user),
                 joinedload(VpnAccess.managed_bot),
+                joinedload(VpnAccess.site),
             )
             .join(VpnAccess.telegram_user)
             .where(
@@ -114,6 +119,7 @@ class VpnAccessRepository:
                 joinedload(VpnAccess.server),
                 joinedload(VpnAccess.telegram_user),
                 joinedload(VpnAccess.managed_bot),
+                joinedload(VpnAccess.site),
             )
             .join(VpnAccess.telegram_user)
             .where(
@@ -133,6 +139,7 @@ class VpnAccessRepository:
                 joinedload(VpnAccess.server),
                 joinedload(VpnAccess.telegram_user),
                 joinedload(VpnAccess.managed_bot),
+                joinedload(VpnAccess.site),
             )
             .join(VpnAccess.telegram_user)
             .where(
@@ -153,6 +160,7 @@ class VpnAccessRepository:
                 joinedload(VpnAccess.server),
                 joinedload(VpnAccess.telegram_user),
                 joinedload(VpnAccess.managed_bot),
+                joinedload(VpnAccess.site),
             )
             .where(VpnAccess.status == "active", VpnAccess.expiry_at <= now)
         )
@@ -166,3 +174,93 @@ class VpnAccessRepository:
             VpnAccess.status != "deleted",
         )
         return bool(self.db.scalar(stmt))
+
+    def get_latest_for_site_visitor(self, site_id: str, visitor_token: str) -> VpnAccess | None:
+        stmt = (
+            select(VpnAccess)
+            .options(
+                joinedload(VpnAccess.server),
+                joinedload(VpnAccess.telegram_user),
+                joinedload(VpnAccess.managed_bot),
+                joinedload(VpnAccess.site),
+            )
+            .where(
+                VpnAccess.site_id == site_id,
+                VpnAccess.site_visitor_token == visitor_token,
+                VpnAccess.status != "deleted",
+            )
+            .order_by(desc(VpnAccess.created_at))
+            .limit(1)
+        )
+        return self.db.scalar(stmt)
+
+    def get_latest_active_for_site_visitor(self, site_id: str, visitor_token: str) -> VpnAccess | None:
+        stmt = (
+            select(VpnAccess)
+            .options(
+                joinedload(VpnAccess.server),
+                joinedload(VpnAccess.telegram_user),
+                joinedload(VpnAccess.managed_bot),
+                joinedload(VpnAccess.site),
+            )
+            .where(
+                VpnAccess.site_id == site_id,
+                VpnAccess.site_visitor_token == visitor_token,
+                VpnAccess.status == "active",
+            )
+            .order_by(desc(VpnAccess.created_at))
+            .limit(1)
+        )
+        return self.db.scalar(stmt)
+
+    def has_trial_for_site_visitor(self, site_id: str, visitor_token: str) -> bool:
+        stmt = select(func.count(VpnAccess.id)).where(
+            VpnAccess.site_id == site_id,
+            VpnAccess.site_visitor_token == visitor_token,
+            VpnAccess.access_type == "test",
+            VpnAccess.status != "deleted",
+        )
+        return bool(self.db.scalar(stmt))
+
+    def get_active_trial_counts_by_server(
+        self,
+        *,
+        product_code: str,
+        server_ids: list[str],
+    ) -> dict[str, int]:
+        if not server_ids:
+            return {}
+
+        stmt = (
+            select(VpnAccess.server_id, func.count(VpnAccess.id))
+            .where(
+                VpnAccess.server_id.in_(server_ids),
+                VpnAccess.product_code == product_code,
+                VpnAccess.access_type == "test",
+                VpnAccess.status == "active",
+            )
+            .group_by(VpnAccess.server_id)
+        )
+        return {
+            str(server_id): int(total or 0)
+            for server_id, total in self.db.execute(stmt).all()
+        }
+
+    def list_approaching_expiration(self, now: datetime, window_hours: int = 24) -> list[VpnAccess]:
+        later = now + timedelta(hours=window_hours)
+        stmt = (
+            select(VpnAccess)
+            .options(
+                joinedload(VpnAccess.telegram_user),
+                joinedload(VpnAccess.managed_bot),
+                joinedload(VpnAccess.server),
+            )
+            .where(
+                VpnAccess.status == "active",
+                VpnAccess.expiry_at > now,
+                VpnAccess.expiry_at <= later,
+                VpnAccess.telegram_user_id.is_not(None),
+                VpnAccess.managed_bot_id.is_not(None),
+            )
+        )
+        return list(self.db.scalars(stmt).unique())

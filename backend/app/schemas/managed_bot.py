@@ -53,6 +53,12 @@ class ManagedBotRuntimeRead(BaseModel):
     name: str
     product_code: str
     telegram_token: str
+    webhook_base_url: str | None = None
     telegram_bot_username: str | None = None
     welcome_text: str | None = None
     help_text: str | None = None
+
+
+class ManagedBotMassMailing(BaseModel):
+    text: str = Field(min_length=1, max_length=4096)
+    image_url: str | None = Field(default=None, max_length=512)

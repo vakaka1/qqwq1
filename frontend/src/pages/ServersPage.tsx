@@ -17,6 +17,8 @@ interface ServerFormState {
   panel_path: string;
   username: string;
   password: string;
+  supports_telegram: boolean;
+  supports_sites: boolean;
 }
 
 const emptyForm: ServerFormState = {
@@ -27,8 +29,43 @@ const emptyForm: ServerFormState = {
   port: "2053",
   panel_path: "",
   username: "",
-  password: ""
+  password: "",
+  supports_telegram: true,
+  supports_sites: true
 };
+
+function supportsTelegram(capabilities: string[]) {
+  return capabilities.length === 0 || capabilities.includes("telegram-config");
+}
+
+function supportsSites(capabilities: string[]) {
+  return capabilities.length === 0 || capabilities.includes("site") || capabilities.includes("telegram-config");
+}
+
+function buildCapabilities(form: ServerFormState) {
+  const capabilities: string[] = [];
+  if (form.supports_telegram) {
+    capabilities.push("telegram-config");
+  }
+  if (form.supports_sites) {
+    capabilities.push("site");
+  }
+  if (capabilities.length === 0) {
+    return ["telegram-config", "site"];
+  }
+  return capabilities;
+}
+
+function formatCapabilities(capabilities: string[]) {
+  const labels: string[] = [];
+  if (supportsTelegram(capabilities)) {
+    labels.push("Telegram");
+  }
+  if (supportsSites(capabilities)) {
+    labels.push("Сайты");
+  }
+  return labels.length > 0 ? labels.join(", ") : "не задано";
+}
 
 function toForm(server: Server): ServerFormState {
   return {
@@ -39,7 +76,9 @@ function toForm(server: Server): ServerFormState {
     port: String(server.port),
     panel_path: server.panel_path,
     username: server.username ?? "",
-    password: ""
+    password: "",
+    supports_telegram: supportsTelegram(server.capabilities),
+    supports_sites: supportsSites(server.capabilities)
   };
 }
 
@@ -144,6 +183,7 @@ export function ServersPage() {
         is_trial_enabled: editingServer?.is_trial_enabled ?? true,
         weight: editingServer?.weight ?? 1,
         notes: null,
+        capabilities: buildCapabilities(form),
         auto_configure: true
       };
 
@@ -280,6 +320,10 @@ export function ServersPage() {
                 <div>
                   <dt>Логин</dt>
                   <dd>{server.username || "—"}</dd>
+                </div>
+                <div>
+                  <dt>Каналы</dt>
+                  <dd>{formatCapabilities(server.capabilities)}</dd>
                 </div>
                 <div>
                   <dt>Статус</dt>
@@ -434,6 +478,28 @@ export function ServersPage() {
                 required={!editingServer}
               />
             </label>
+
+            <div className="full-width">
+              <span>Каналы выдачи</span>
+              <div className="choice-grid">
+                <button
+                  className={`choice-card${form.supports_telegram ? " choice-card--active" : ""}`}
+                  onClick={() => setForm({ ...form, supports_telegram: !form.supports_telegram })}
+                  type="button"
+                >
+                  <strong>Telegram</strong>
+                  <span>Сервер можно использовать для bot-выдачи конфигов.</span>
+                </button>
+                <button
+                  className={`choice-card${form.supports_sites ? " choice-card--active" : ""}`}
+                  onClick={() => setForm({ ...form, supports_sites: !form.supports_sites })}
+                  type="button"
+                >
+                  <strong>Сайты</strong>
+                  <span>Сервер можно использовать для site-выдачи конфигов через web runtime.</span>
+                </button>
+              </div>
+            </div>
 
             <div className="modal-footer">
               <button className="secondary-button" onClick={closeModal} type="button">

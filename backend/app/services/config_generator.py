@@ -5,11 +5,22 @@ from urllib.parse import urlencode
 
 from app.models.server import Server
 from app.models.vpn_access import VpnAccess
-from app.utils.naming import slugify_identifier
+from app.utils.naming import infer_channel_name, slugify_identifier
 from app.utils.serialization import encode_tag, parse_json_field
 
 
 class ConfigGenerator:
+    def _format_traffic_limit(self, total_bytes: int) -> str | None:
+        if total_bytes <= 0:
+            return None
+        gib = 1024 * 1024 * 1024
+        mib = 1024 * 1024
+        if total_bytes % gib == 0:
+            return f"{total_bytes // gib} ГБ"
+        if total_bytes % mib == 0:
+            return f"{total_bytes // mib} МБ"
+        return f"{total_bytes} байт"
+
     def generate_vless(self, *, server: Server, access: VpnAccess, inbound: dict, client_payload: dict) -> dict:
         protocol = inbound.get("protocol", "vless")
         if protocol != "vless":
@@ -103,11 +114,16 @@ class ConfigGenerator:
             f"?{query_string}#{encode_tag(tag)}"
         )
         expiry_label = access.expiry_at.astimezone(timezone.utc).strftime("%d.%m.%Y %H:%M UTC")
+        channel_name = infer_channel_name(access.product_code)
+        traffic_label = self._format_traffic_limit(int(client_payload.get("totalGB") or 0))
         config_text = (
             f"Конфигурация VLESS\n"
+            f"Канал: {channel_name}\n"
             f"Сервер: {server.name}\n"
             f"Страна: {server.country}\n"
             f"Профиль: {access.client_email}\n"
             f"Срок действия: {expiry_label}"
         )
+        if traffic_label:
+            config_text += f"\nТрафик: {traffic_label}"
         return {"uri": uri, "text": config_text, "query": query}

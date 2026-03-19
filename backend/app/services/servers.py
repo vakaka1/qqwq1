@@ -35,7 +35,7 @@ class ServerService:
         self.audit = AuditService(db)
 
     def _to_read(self, server: Server) -> ServerRead:
-        capabilities = server.capabilities or ["telegram-config"]
+        capabilities = server.capabilities or ["telegram-config", "site"]
         return ServerRead.model_validate(
             {
                 **server.__dict__,

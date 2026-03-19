@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{{SERVICE_NAME}}</title>
+  <style>
+    :root {
+      --bg: #f8fafc;
+      --card: #ffffff;
+      --primary: #2563eb;
+      --primary-dark: #1e40af;
+      --text: #0f172a;
+      --muted: #64748b;
+      --border: #e2e8f0;
+      --shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: 'Inter', -apple-system, system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 24px;
+    }
+
+    .card {
+      background: var(--card);
+      width: 100%;
+      max-width: 440px;
+      border-radius: 20px;
+      padding: 40px;
+      box-shadow: var(--shadow);
+      border: 1px solid var(--border);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--primary);
+      font-weight: 700;
+      font-size: 20px;
+      margin-bottom: 32px;
+    }
+
+    .brand-dot {
+      width: 12px;
+      height: 12px;
+      background: var(--primary);
+      border-radius: 50%;
+    }
+
+    h1 {
+      font-size: 28px;
+      font-weight: 700;
+      line-height: 1.3;
+      margin: 0 0 16px 0;
+      letter-spacing: -0.01em;
+    }
+
+    p {
+      color: var(--muted);
+      font-size: 16px;
+      line-height: 1.5;
+      margin-bottom: 32px;
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1px;
+      background: var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      margin-bottom: 32px;
+      border: 1px solid var(--border);
+    }
+
+    .stat-item {
+      background: #fff;
+      padding: 16px;
+      text-align: center;
+    }
+
+    .stat-label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--muted);
+      margin-bottom: 4px;
+      font-weight: 600;
+    }
+
+    .stat-value {
+      font-size: 18px;
+      font-weight: 700;
+      color: var(--text);
+    }
+
+    .actions { display: flex; flex-direction: column; gap: 12px; }
+
+    .btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 54px;
+      border-radius: 12px;
+      font-size: 16px;
+      font-weight: 600;
+      text-decoration: none;
+      transition: all 0.2s ease;
+    }
+
+    .btn-main {
+      background: var(--primary);
+      color: white;
+    }
+
+    .btn-main:hover { background: var(--primary-dark); }
+
+    .btn-outline {
+      border: 1px solid var(--border);
+      color: var(--text);
+    }
+
+    .btn-outline:hover { background: #f1f5f9; }
+
+    .footer {
+      margin-top: 32px;
+      text-align: center;
+      font-size: 14px;
+      color: var(--muted);
+    }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <div class="brand">
+      <div class="brand-dot"></div>
+      {{SERVICE_NAME}}
+    </div>
+
+    <h1>Доступ готов к использованию</h1>
+    <p>Мы подготовили вашу персональную конфигурацию VLESS. Подключитесь сейчас, чтобы обеспечить свою цифровую безопасность.</p>
+
+    <div class="stats">
+      <div class="stat-item">
+        <div class="stat-label">Период</div>
+        <div class="stat-value">{{SITE_TRIAL_DURATION_HOURS}} ч.</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-label">Трафик</div>
+        <div class="stat-value">{{SITE_TRIAL_TOTAL_GB}} ГБ</div>
+      </div>
+    </div>
+
+    <div class="actions">
+      <a href="{{CONFIG_URL}}" class="btn btn-main">Подключить устройство</a>
+      <a href="{{TELEGRAM_URL}}" class="btn btn-outline">Связаться с ботом</a>
+    </div>
+
+    <div class="footer">
+      Безопасность. Скорость. Стабильность.
+    </div>
+  </main>
+</body>
+</html>

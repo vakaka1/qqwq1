@@ -5,11 +5,11 @@ from typing import Any
 
 import httpx
 
-from app.config.settings import get_settings
 from app.core.security import decrypt_secret
 from app.integrations.three_x_ui.base import BaseThreeXUIAdapter
 from app.integrations.three_x_ui.exceptions import ThreeXUIAuthError, ThreeXUIRequestError
 from app.models.server import Server
+from app.services.system_settings import load_effective_system_settings
 from app.utils.serialization import dump_json, parse_json_field
 
 logger = logging.getLogger(__name__)
@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 class ThreeXUIAdapter(BaseThreeXUIAdapter):
     def __init__(self, server: Server) -> None:
         self.server = server
-        self.settings = get_settings()
+        self.runtime_settings = load_effective_system_settings()
 
     @property
     def base_url(self) -> str:
@@ -39,8 +39,8 @@ class ThreeXUIAdapter(BaseThreeXUIAdapter):
 
     def _build_client(self) -> httpx.Client:
         return httpx.Client(
-            timeout=self.settings.three_xui_timeout_seconds,
-            verify=self.settings.three_xui_verify_ssl,
+            timeout=self.runtime_settings.three_xui_timeout_seconds,
+            verify=self.runtime_settings.three_xui_verify_ssl,
             follow_redirects=True,
         )
 
@@ -145,4 +145,3 @@ class ThreeXUIAdapter(BaseThreeXUIAdapter):
         with self._build_client() as client:
             self._login(client)
             self._request("POST", f"/inbounds/{inbound_id}/delClient/{client_id}", client=client)
-

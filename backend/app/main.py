@@ -33,7 +33,7 @@ async def lifespan(_app: FastAPI):
     stop_scheduler()
 
 
-app = FastAPI(title=settings.app_name, lifespan=lifespan)
+app = FastAPI(title="Xray Control Center", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.parsed_allowed_origins,

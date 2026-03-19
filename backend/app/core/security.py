@@ -41,7 +41,10 @@ def encrypt_secret(value: str | None) -> str | None:
 def decrypt_secret(value: str | None) -> str | None:
     if not value:
         return None
-    return _build_fernet().decrypt(value.encode("utf-8")).decode("utf-8")
+    try:
+        return _build_fernet().decrypt(value.encode("utf-8")).decode("utf-8")
+    except Exception:
+        return None
 
 
 def create_access_token(subject: str, expires_delta: timedelta | None = None) -> tuple[str, datetime]:

@@ -287,6 +287,7 @@ export function AccessesPage() {
                       <div className="table-subtitle">
                         {access.telegram_user ? `Telegram ${access.telegram_user.telegram_user_id}` : "без Telegram"}
                         {access.managed_bot ? ` • ${access.managed_bot.name}` : ""}
+                        {access.site ? ` • сайт ${access.site.name}` : ""}
                       </div>
                     </td>
                     <td>{access.server.name}</td>

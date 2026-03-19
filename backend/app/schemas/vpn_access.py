@@ -36,6 +36,14 @@ class AccessConfigRead(BaseModel):
     expires_at: datetime
 
 
+class AccessSiteRead(BaseModel):
+    id: str
+    code: str
+    name: str
+    domain: str | None = None
+    public_url: str | None = None
+
+
 class AccessRead(ORMModel):
     id: str
     product_code: str
@@ -58,4 +66,5 @@ class AccessRead(ORMModel):
     updated_at: datetime
     server: ServerRead
     managed_bot: ManagedBotRead | None = None
+    site: AccessSiteRead | None = None
     telegram_user: TelegramUserRead | None

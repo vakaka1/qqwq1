@@ -16,6 +16,7 @@ class VpnAccess(TimestampMixin, Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     telegram_user_id: Mapped[int | None] = mapped_column(ForeignKey("telegram_users.id"), nullable=True)
     managed_bot_id: Mapped[str | None] = mapped_column(ForeignKey("managed_bots.id"), nullable=True, index=True)
+    site_id: Mapped[str | None] = mapped_column(ForeignKey("sites.id"), nullable=True, index=True)
     server_id: Mapped[str] = mapped_column(ForeignKey("servers.id"), index=True)
     product_code: Mapped[str] = mapped_column(String(64), default="telegram-config", index=True)
     access_type: Mapped[str] = mapped_column(String(16))
@@ -26,6 +27,7 @@ class VpnAccess(TimestampMixin, Base):
     client_email: Mapped[str] = mapped_column(String(255), unique=True)
     remote_client_id: Mapped[str] = mapped_column(String(255))
     client_sub_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    site_visitor_token: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     device_limit: Mapped[int] = mapped_column(Integer, default=1)
     expiry_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     activated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -36,4 +38,5 @@ class VpnAccess(TimestampMixin, Base):
 
     telegram_user = relationship("TelegramUser", back_populates="accesses")
     managed_bot = relationship("ManagedBot", back_populates="accesses")
+    site = relationship("Site", back_populates="accesses")
     server = relationship("Server", back_populates="accesses")

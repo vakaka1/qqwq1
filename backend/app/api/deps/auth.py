@@ -37,3 +37,8 @@ def verify_bot_token(x_bot_token: str = Header(..., alias="X-Bot-Token")) -> Non
 def verify_runner_token(x_runner_token: str = Header(..., alias="X-Runner-Token")) -> None:
     if not secure_compare(x_runner_token, settings.bot_runner_token):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Неверный runner token")
+
+
+def verify_site_runtime_token(x_site_token: str = Header(..., alias="X-Site-Token")) -> None:
+    if not secure_compare(x_site_token, settings.site_runtime_token):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Неверный site runtime token")

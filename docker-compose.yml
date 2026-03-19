@@ -8,11 +8,11 @@ services:
     environment:
       DATABASE_URL: sqlite:////app/data/app.db
       AUTO_CREATE_TABLES: "false"
-      PUBLIC_APP_URL: http://localhost:8000
     ports:
       - "8000:8000"
     volumes:
       - ./backend/data:/app/data
+      - ./site_templates:/app/site_templates:ro
     restart: unless-stopped
 
   bot:
@@ -23,6 +23,9 @@ services:
       - .env
     environment:
       BACKEND_BASE_URL: http://backend:8000/api/v1
+      SYNC_INTERVAL_SECONDS: ${BOT_SYNC_INTERVAL_SECONDS:-30}
+    ports:
+      - "8001:8001"
     depends_on:
       - backend
     restart: unless-stopped

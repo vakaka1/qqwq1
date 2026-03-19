@@ -10,7 +10,10 @@ import { BotsPage } from "../pages/BotsPage";
 import { DashboardPage } from "../pages/DashboardPage";
 import { LoginPage } from "../pages/LoginPage";
 import { LogsPage } from "../pages/LogsPage";
+import { MonetizationPage } from "../pages/MonetizationPage";
 import { ServersPage } from "../pages/ServersPage";
+import { SettingsPage } from "../pages/SettingsPage";
+import { SitesPage } from "../pages/SitesPage";
 import { SetupPage } from "../pages/SetupPage";
 import { UsersPage } from "../pages/UsersPage";
 
@@ -30,10 +33,13 @@ function ProtectedRoutes() {
         <Route path="/" element={<DashboardPage />} />
         <Route path="/bots" element={<BotsPage />} />
         <Route path="/servers" element={<ServersPage />} />
+        <Route path="/sites" element={<SitesPage />} />
         <Route path="/users" element={<UsersPage />} />
         <Route path="/accesses" element={<AccessesPage />} />
         <Route path="/logs" element={<LogsPage />} />
         <Route path="/admins" element={<AdminsPage />} />
+        <Route path="/monetization/*" element={<MonetizationPage />} />
+        <Route path="/settings" element={<SettingsPage />} />
       </Route>
       <Route path="*" element={<Navigate replace to="/" />} />
     </Routes>

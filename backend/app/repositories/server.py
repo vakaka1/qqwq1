@@ -34,8 +34,17 @@ class ServerRepository:
             .where(Server.is_active.is_(True), Server.is_trial_enabled.is_(True))
             .order_by(asc(Server.name))
         )
+
+        def supports(server: Server) -> bool:
+            capabilities = list(server.capabilities or [])
+            if not capabilities or product_code in capabilities:
+                return True
+            if product_code == "site" and "telegram-config" in capabilities:
+                return True
+            return False
+
         return [
             server
             for server in self.db.scalars(stmt)
-            if not server.capabilities or product_code in server.capabilities
+            if supports(server)
         ]
