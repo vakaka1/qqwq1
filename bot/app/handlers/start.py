@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import io
+from contextlib import suppress
 from datetime import datetime
-from html import escape
+
+import qrcode
 
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandStart
 from aiogram.types import BotCommand, BufferedInputFile, CallbackQuery, InlineKeyboardMarkup, Message, User
 
-from app.keyboards.main import main_menu_keyboard
+from app.keyboards.main import config_bundle_keyboard, main_menu_keyboard
 from app.services.backend_client import BackendClient, ManagedBotRuntimeConfig
 
 
@@ -46,18 +49,24 @@ def _format_status(value: str | None) -> str:
     return labels.get(value.lower(), value)
 
 
-async def _answer_markdown(
+def _is_not_modified_error(exc: TelegramBadRequest) -> bool:
+    return "message is not modified" in str(exc).lower()
+
+
+def _escape_markdown_v2(value: str) -> str:
+    escaped = value
+    for char in ("\\", "_", "*", "[", "]", "(", ")", "~", "`", ">", "#", "+", "-", "=", "|", "{", "}", ".", "!"):
+        escaped = escaped.replace(char, f"\\{char}")
+    return escaped
+
+
+async def _send_text(
     message: Message,
     text: str,
     *,
     reply_markup: InlineKeyboardMarkup | None = None,
 ) -> None:
-    await message.answer(
-        text,
-        parse_mode="Markdown",
-        disable_web_page_preview=True,
-        reply_markup=reply_markup,
-    )
+    await message.answer(text, disable_web_page_preview=True, reply_markup=reply_markup)
 
 
 async def _answer_custom_text(
@@ -77,31 +86,137 @@ async def _answer_custom_text(
         await message.answer(text, disable_web_page_preview=True, reply_markup=reply_markup)
 
 
-async def _send_config_bundle(
+async def _replace_message_text(
+    message: Message,
+    text: str,
+    *,
+    reply_markup: InlineKeyboardMarkup | None = None,
+) -> None:
+    try:
+        await message.edit_text(text, disable_web_page_preview=True, reply_markup=reply_markup)
+        return
+    except TelegramBadRequest as exc:
+        if _is_not_modified_error(exc):
+            return
+
+    await message.answer(text, disable_web_page_preview=True, reply_markup=reply_markup)
+    with suppress(TelegramBadRequest):
+        await message.delete()
+
+
+async def _replace_message_custom_text(
+    message: Message,
+    text: str,
+    *,
+    reply_markup: InlineKeyboardMarkup | None = None,
+) -> None:
+    try:
+        await message.edit_text(
+            text,
+            parse_mode="Markdown",
+            disable_web_page_preview=True,
+            reply_markup=reply_markup,
+        )
+        return
+    except TelegramBadRequest as exc:
+        if _is_not_modified_error(exc):
+            return
+
+    await _answer_custom_text(message, text, reply_markup=reply_markup)
+    with suppress(TelegramBadRequest):
+        await message.delete()
+
+
+def _build_config_qr_file(config_uri: str) -> BufferedInputFile:
+    qr = qrcode.QRCode(box_size=10, border=2)
+    qr.add_data(config_uri)
+    qr.make(fit=True)
+    image = qr.make_image(fill_color="black", back_color="white")
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return BufferedInputFile(buffer.getvalue(), filename="vless-config-qr.png")
+
+
+def _build_config_qr_caption(title: str, summary: str) -> str:
+    parts = [title, "", summary.strip() or "Конфиг готов.", "", "Нажмите кнопку ниже, чтобы показать полный URI."]
+    caption = "\n".join(parts).strip()
+    if len(caption) <= 1024:
+        return caption
+    return f"{title}\n\nКонфиг готов. Полный URI доступен по кнопке ниже."
+
+
+def _build_config_text(title: str, summary: str, config_uri: str) -> str:
+    parts = [_escape_markdown_v2(title)]
+    cleaned_summary = summary.strip()
+    if cleaned_summary:
+        parts.extend(["", _escape_markdown_v2(cleaned_summary)])
+    parts.extend(["", _escape_markdown_v2("Полный VLESS URI:"), f"`{config_uri}`"])
+    return "\n".join(parts)
+
+
+async def _send_or_replace_config_qr(
     message: Message,
     *,
+    bundle_kind: str,
     title: str,
     summary: str,
     config_uri: str,
+    replace: bool = False,
 ) -> None:
-    text = f"{title}\n\n{summary}\n\n*URI*\n`{config_uri}`"
-    if len(text) <= 3800:
-        await _answer_markdown(message, text)
+    reply_markup = config_bundle_keyboard(bundle_kind, showing_qr=True)
+    if replace:
+        await message.answer_photo(
+            photo=_build_config_qr_file(config_uri),
+            caption=_build_config_qr_caption(title, summary),
+            reply_markup=reply_markup,
+        )
+        with suppress(TelegramBadRequest):
+            await message.delete()
         return
 
-    await _answer_markdown(
-        message,
-        f"{title}\n\n{summary}\n\nПолный URI отправлен отдельным файлом.",
+    await message.answer_photo(
+        photo=_build_config_qr_file(config_uri),
+        caption=_build_config_qr_caption(title, summary),
+        reply_markup=reply_markup,
     )
-    await message.answer_document(
-        BufferedInputFile(config_uri.encode("utf-8"), filename="vless-config.txt"),
-        caption="Полный VLESS URI",
+
+
+async def _send_or_replace_config_text(
+    message: Message,
+    *,
+    bundle_kind: str,
+    title: str,
+    summary: str,
+    config_uri: str,
+    replace: bool = False,
+) -> None:
+    text = _build_config_text(title, summary, config_uri)
+    if len(text) > 4000:
+        text = f"{title}\n\nПолный URI слишком длинный для одного сообщения. Используйте QR-код."
+
+    reply_markup = config_bundle_keyboard(bundle_kind, showing_qr=False)
+    if replace:
+        await message.answer(
+            text,
+            parse_mode="MarkdownV2",
+            disable_web_page_preview=True,
+            reply_markup=reply_markup,
+        )
+        with suppress(TelegramBadRequest):
+            await message.delete()
+        return
+
+    await message.answer(
+        text,
+        parse_mode="MarkdownV2",
+        disable_web_page_preview=True,
+        reply_markup=reply_markup,
     )
 
 
 def _default_welcome_text(bot_config: ManagedBotRuntimeConfig) -> str:
     return (
-        f"*{bot_config.name}*\n\n"
+        f"{bot_config.name}\n\n"
         "Выберите действие ниже:\n"
         "• получить тестовый доступ\n"
         "• проверить текущий статус\n"
@@ -112,11 +227,22 @@ def _default_welcome_text(bot_config: ManagedBotRuntimeConfig) -> str:
 
 def _default_help_text() -> str:
     return (
-        "*Как подключиться*\n\n"
+        "Как подключиться\n\n"
         "1. Нажмите «Получить тест 24 часа».\n"
-        "2. Получите готовый VLESS URI.\n"
+        "2. Получите QR-код или готовый VLESS URI.\n"
         "3. Импортируйте его в совместимый клиент.\n"
         "4. Если нужен текущий доступ, откройте «Мой конфиг»."
+    )
+
+
+def _build_status_text(payload: dict) -> str:
+    return (
+        "Ваш статус\n\n"
+        f"Пользователь: {_format_status(payload['status'])}\n"
+        f"Тест использован: {'да' if payload['trial_used'] else 'нет'}\n"
+        f"Активный доступ: {_format_status(payload['active_access_status'])}\n"
+        f"Сервер: {payload['server_name'] or '—'}\n"
+        f"Истекает: {_format_datetime(payload['active_access_expires_at'])}"
     )
 
 
@@ -147,7 +273,7 @@ def build_router(client: BackendClient, bot_config: ManagedBotRuntimeConfig) -> 
             await _answer_custom_text(message, bot_config.welcome_text, reply_markup=main_menu_keyboard())
             return
 
-        await _answer_markdown(message, _default_welcome_text(bot_config), reply_markup=main_menu_keyboard())
+        await _send_text(message, _default_welcome_text(bot_config), reply_markup=main_menu_keyboard())
 
     @router.message(Command("status"))
     async def status_cmd(message: Message) -> None:
@@ -159,17 +285,7 @@ def build_router(client: BackendClient, bot_config: ManagedBotRuntimeConfig) -> 
             await message.answer(f"Не удалось получить статус: {exc}")
             return
 
-        await _answer_markdown(
-            message,
-            (
-                "*Ваш статус*\n\n"
-                f"*Пользователь:* {_format_status(payload['status'])}\n"
-                f"*Тест использован:* {'да' if payload['trial_used'] else 'нет'}\n"
-                f"*Активный доступ:* {_format_status(payload['active_access_status'])}\n"
-                f"*Сервер:* {payload['server_name'] or '—'}\n"
-                f"*Истекает:* {_format_datetime(payload['active_access_expires_at'])}"
-            ),
-        )
+        await _send_text(message, _build_status_text(payload), reply_markup=main_menu_keyboard())
 
     @router.message(Command("trial"))
     async def trial_cmd(message: Message) -> None:
@@ -179,9 +295,10 @@ def build_router(client: BackendClient, bot_config: ManagedBotRuntimeConfig) -> 
             await message.answer(f"Не удалось выдать тест: {exc}")
             return
 
-        await _send_config_bundle(
+        await _send_or_replace_config_qr(
             message,
-            title="*Тестовый доступ выдан*",
+            bundle_kind="trial",
+            title="Тестовый доступ выдан",
             summary=payload["config_text"],
             config_uri=payload["config_uri"],
         )
@@ -196,9 +313,10 @@ def build_router(client: BackendClient, bot_config: ManagedBotRuntimeConfig) -> 
             await message.answer(f"Не удалось получить конфиг: {exc}")
             return
 
-        await _send_config_bundle(
+        await _send_or_replace_config_qr(
             message,
-            title="*Ваш активный конфиг*",
+            bundle_kind="config",
+            title="Ваш активный конфиг",
             summary=payload["config_text"],
             config_uri=payload["config_uri"],
         )
@@ -206,9 +324,29 @@ def build_router(client: BackendClient, bot_config: ManagedBotRuntimeConfig) -> 
     @router.message(Command("help"))
     async def help_cmd(message: Message) -> None:
         if bot_config.help_text:
-            await _answer_custom_text(message, bot_config.help_text)
+            await _answer_custom_text(message, bot_config.help_text, reply_markup=main_menu_keyboard())
         else:
-            await _answer_markdown(message, _default_help_text())
+            await _send_text(message, _default_help_text(), reply_markup=main_menu_keyboard())
+
+    @router.callback_query(F.data == "menu")
+    async def show_menu(callback: CallbackQuery) -> None:
+        if not callback.message:
+            await callback.answer()
+            return
+
+        if bot_config.welcome_text:
+            await _replace_message_custom_text(
+                callback.message,
+                bot_config.welcome_text,
+                reply_markup=main_menu_keyboard(),
+            )
+        else:
+            await _replace_message_text(
+                callback.message,
+                _default_welcome_text(bot_config),
+                reply_markup=main_menu_keyboard(),
+            )
+        await callback.answer()
 
     @router.callback_query(F.data == "trial")
     async def request_trial(callback: CallbackQuery) -> None:
@@ -221,11 +359,13 @@ def build_router(client: BackendClient, bot_config: ManagedBotRuntimeConfig) -> 
             await callback.answer()
             return
 
-        await _send_config_bundle(
+        await _send_or_replace_config_qr(
             callback.message,
-            title="*Тестовый доступ выдан*",
+            bundle_kind="trial",
+            title="Тестовый доступ выдан",
             summary=payload["config_text"],
             config_uri=payload["config_uri"],
+            replace=True,
         )
         await callback.answer("Тест выдан")
 
@@ -241,16 +381,10 @@ def build_router(client: BackendClient, bot_config: ManagedBotRuntimeConfig) -> 
             await callback.answer()
             return
 
-        await _answer_markdown(
+        await _replace_message_text(
             callback.message,
-            (
-                "*Ваш статус*\n\n"
-                f"*Пользователь:* {_format_status(payload['status'])}\n"
-                f"*Тест использован:* {'да' if payload['trial_used'] else 'нет'}\n"
-                f"*Активный доступ:* {_format_status(payload['active_access_status'])}\n"
-                f"*Сервер:* {payload['server_name'] or '—'}\n"
-                f"*Истекает:* {_format_datetime(payload['active_access_expires_at'])}"
-            ),
+            _build_status_text(payload),
+            reply_markup=main_menu_keyboard(),
         )
         await callback.answer()
 
@@ -266,11 +400,13 @@ def build_router(client: BackendClient, bot_config: ManagedBotRuntimeConfig) -> 
             await callback.answer()
             return
 
-        await _send_config_bundle(
+        await _send_or_replace_config_qr(
             callback.message,
-            title="*Ваш активный конфиг*",
+            bundle_kind="config",
+            title="Ваш активный конфиг",
             summary=payload["config_text"],
             config_uri=payload["config_uri"],
+            replace=True,
         )
         await callback.answer()
 
@@ -278,9 +414,52 @@ def build_router(client: BackendClient, bot_config: ManagedBotRuntimeConfig) -> 
     async def help_message(callback: CallbackQuery) -> None:
         if callback.message:
             if bot_config.help_text:
-                await _answer_custom_text(callback.message, bot_config.help_text)
+                await _replace_message_custom_text(
+                    callback.message,
+                    bot_config.help_text,
+                    reply_markup=main_menu_keyboard(),
+                )
             else:
-                await _answer_markdown(callback.message, _default_help_text())
+                await _replace_message_text(
+                    callback.message,
+                    _default_help_text(),
+                    reply_markup=main_menu_keyboard(),
+                )
+        await callback.answer()
+
+    @router.callback_query(F.data.startswith("bundle:"))
+    async def toggle_bundle_view(callback: CallbackQuery) -> None:
+        if not callback.message or not callback.data:
+            await callback.answer()
+            return
+
+        _, bundle_kind, view_mode = callback.data.split(":", maxsplit=2)
+        try:
+            payload = await client.get_config(callback.from_user.id, bot_config.code)
+        except RuntimeError as exc:
+            await callback.message.answer(f"Не удалось получить конфиг: {exc}")
+            await callback.answer()
+            return
+
+        title = "Тестовый доступ выдан" if bundle_kind == "trial" else "Ваш активный конфиг"
+        if view_mode == "text":
+            await _send_or_replace_config_text(
+                callback.message,
+                bundle_kind=bundle_kind,
+                title=title,
+                summary=payload["config_text"],
+                config_uri=payload["config_uri"],
+                replace=True,
+            )
+        else:
+            await _send_or_replace_config_qr(
+                callback.message,
+                bundle_kind=bundle_kind,
+                title=title,
+                summary=payload["config_text"],
+                config_uri=payload["config_uri"],
+                replace=True,
+            )
         await callback.answer()
 
     return router
