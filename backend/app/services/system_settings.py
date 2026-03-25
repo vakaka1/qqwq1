@@ -16,6 +16,7 @@ from app.services.freekassa import FreeKassaService
 DEFAULT_SYSTEM_SETTINGS = {
     "app_name": "Xray Control Center",
     "public_app_url": "http://localhost:8000",
+    "freekassa_public_url": None,
     "trial_duration_hours": 24,
     "site_trial_duration_hours": 6,
     "site_trial_total_gb": 1,
@@ -24,7 +25,7 @@ DEFAULT_SYSTEM_SETTINGS = {
     "three_xui_verify_ssl": False,
     "bot_webhook_base_url": None,
     "freekassa_shop_id": None,
-    "freekassa_sbp_method_id": 44,
+    "freekassa_sbp_method_id": 42,
 }
 
 
@@ -32,6 +33,7 @@ class SystemSettingsService:
     managed_fields = (
         "app_name",
         "public_app_url",
+        "freekassa_public_url",
         "trial_duration_hours",
         "site_trial_duration_hours",
         "site_trial_total_gb",
@@ -77,6 +79,7 @@ class SystemSettingsService:
 
         return SystemSettingsRead(
             **payload,
+            freekassa_secret_word=None,
             freekassa_api_key=None,
             freekassa_secret_word_2=None,
             sources=sources,
@@ -106,6 +109,8 @@ class SystemSettingsService:
         record = self._get_or_create()
         record.app_name = payload.app_name.strip()
         record.public_app_url = payload.public_app_url.strip().rstrip("/")
+        if "freekassa_public_url" in payload.model_fields_set:
+            record.freekassa_public_url = payload.freekassa_public_url
         record.trial_duration_hours = payload.trial_duration_hours
         record.site_trial_duration_hours = payload.site_trial_duration_hours
         record.site_trial_total_gb = payload.site_trial_total_gb
@@ -117,6 +122,8 @@ class SystemSettingsService:
             record.freekassa_shop_id = payload.freekassa_shop_id
         if "freekassa_sbp_method_id" in payload.model_fields_set:
             record.freekassa_sbp_method_id = payload.freekassa_sbp_method_id
+        if "freekassa_secret_word" in payload.model_fields_set and payload.freekassa_secret_word and payload.freekassa_secret_word.strip():
+            record.freekassa_secret_word_encrypted = encrypt_secret(payload.freekassa_secret_word.strip())
         if "freekassa_api_key" in payload.model_fields_set and payload.freekassa_api_key and payload.freekassa_api_key.strip():
             record.freekassa_api_key_encrypted = encrypt_secret(payload.freekassa_api_key.strip())
         if (
@@ -127,6 +134,7 @@ class SystemSettingsService:
             record.freekassa_secret_word_2_encrypted = encrypt_secret(payload.freekassa_secret_word_2.strip())
         self.repo.save(record)
         audit_payload = payload.model_dump()
+        audit_payload["freekassa_secret_word"] = bool(payload.freekassa_secret_word and payload.freekassa_secret_word.strip())
         audit_payload["freekassa_api_key"] = bool(payload.freekassa_api_key and payload.freekassa_api_key.strip())
         audit_payload["freekassa_secret_word_2"] = bool(
             payload.freekassa_secret_word_2 and payload.freekassa_secret_word_2.strip()
@@ -162,6 +170,7 @@ def load_effective_system_settings(db: Session | None = None) -> SystemSettingsR
         return SystemSettingsRead(
             app_name=str(DEFAULT_SYSTEM_SETTINGS["app_name"]),
             public_app_url=str(DEFAULT_SYSTEM_SETTINGS["public_app_url"]),
+            freekassa_public_url=None,
             trial_duration_hours=int(DEFAULT_SYSTEM_SETTINGS["trial_duration_hours"]),
             site_trial_duration_hours=int(DEFAULT_SYSTEM_SETTINGS["site_trial_duration_hours"]),
             site_trial_total_gb=int(DEFAULT_SYSTEM_SETTINGS["site_trial_total_gb"]),
@@ -170,6 +179,7 @@ def load_effective_system_settings(db: Session | None = None) -> SystemSettingsR
             three_xui_verify_ssl=bool(DEFAULT_SYSTEM_SETTINGS["three_xui_verify_ssl"]),
             bot_webhook_base_url=None,
             freekassa_shop_id=None,
+            freekassa_secret_word=None,
             freekassa_api_key=None,
             freekassa_secret_word_2=None,
             freekassa_sbp_method_id=int(DEFAULT_SYSTEM_SETTINGS["freekassa_sbp_method_id"]),

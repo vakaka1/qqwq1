@@ -348,15 +348,25 @@ class MonetizationService:
                 "amount_kopecks": amount_kopecks,
             },
         )
+        buyer_email = self._build_telegram_payer_email(user.telegram_user_id)
+        payment.payer_email = buyer_email
+        payment.provider_payment_url = self.freekassa.build_checkout_url(
+            merchant_order_id=payment.merchant_order_id,
+            amount_kopecks=payment.amount_kopecks,
+            payment_method_id=payment.payment_method,
+            payer_email=buyer_email,
+        )
+        payment.provider_response = {
+            "checkout": "sci",
+            "checkout_base_url": "https://pay.fk.money/",
+            "location": payment.provider_payment_url,
+        }
         self.db.commit()
         return BotPaymentRead(
             payment_id=payment.id,
             amount_kopecks=payment.amount_kopecks,
             amount_rub=self.format_kopecks(payment.amount_kopecks),
-            payment_url=self.freekassa.build_payment_redirect_url(
-                payment.redirect_token,
-                public_app_url=load_effective_system_settings(self.db).public_app_url,
-            ),
+            payment_url=payment.provider_payment_url,
             status=payment.status,
             provider=payment.provider,
             payment_method=payment.payment_method,
@@ -372,19 +382,20 @@ class MonetizationService:
             return payment.provider_payment_url
 
         buyer_email = payment.payer_email or self._build_telegram_payer_email(payment.telegram_user.telegram_user_id)
-        provider_response = self.freekassa.create_payment(
+        provider_payment_url = self.freekassa.build_checkout_url(
             merchant_order_id=payment.merchant_order_id,
             amount_kopecks=payment.amount_kopecks,
             payment_method_id=payment.payment_method,
             payer_email=buyer_email,
-            payer_ip=source_ip,
         )
-        payment.status = "created"
         payment.source_ip = source_ip
         payment.payer_email = buyer_email
-        payment.external_order_id = str(provider_response["orderId"]) if provider_response.get("orderId") is not None else None
-        payment.provider_payment_url = str(provider_response["location"]) if provider_response.get("location") else None
-        payment.provider_response = provider_response
+        payment.provider_payment_url = provider_payment_url
+        payment.provider_response = {
+            "checkout": "sci",
+            "checkout_base_url": "https://pay.fk.money/",
+            "location": provider_payment_url,
+        }
         self.audit.log(
             actor_type="bot",
             actor_id=str(payment.telegram_user.telegram_user_id),
@@ -392,7 +403,7 @@ class MonetizationService:
             entity_type="payment",
             entity_id=payment.id,
             message="Подготовлена ссылка FreeKassa для пополнения",
-            payload={"source_ip": source_ip, "provider_response": provider_response},
+            payload={"source_ip": source_ip, "provider_response": payment.provider_response},
         )
         self.db.commit()
         if not payment.provider_payment_url:

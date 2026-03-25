@@ -268,6 +268,7 @@ export interface FreeKassaEndpoint {
 
 export interface FreeKassaSettings {
   shop_id: number | null;
+  has_secret_word: boolean;
   has_api_key: boolean;
   has_secret_word_2: boolean;
   sbp_method_id: number;
@@ -284,6 +285,7 @@ export interface FreeKassaSettings {
 export interface SystemSettings {
   app_name: string;
   public_app_url: string;
+  freekassa_public_url: string | null;
   trial_duration_hours: number;
   site_trial_duration_hours: number;
   site_trial_total_gb: number;
@@ -292,6 +294,7 @@ export interface SystemSettings {
   three_xui_verify_ssl: boolean;
   bot_webhook_base_url: string | null;
   freekassa_shop_id: number | null;
+  freekassa_secret_word: string | null;
   freekassa_api_key: string | null;
   freekassa_secret_word_2: string | null;
   freekassa_sbp_method_id: number;

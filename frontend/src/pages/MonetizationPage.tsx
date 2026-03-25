@@ -30,6 +30,8 @@ const emptyPlanForm: PlanFormState = {
 
 interface FreeKassaFormState {
   freekassa_shop_id: string;
+  freekassa_public_url: string;
+  freekassa_secret_word: string;
   freekassa_api_key: string;
   freekassa_secret_word_2: string;
   freekassa_sbp_method_id: string;
@@ -37,9 +39,11 @@ interface FreeKassaFormState {
 
 const emptyFreeKassaForm: FreeKassaFormState = {
   freekassa_shop_id: "",
+  freekassa_public_url: "",
+  freekassa_secret_word: "",
   freekassa_api_key: "",
   freekassa_secret_word_2: "",
-  freekassa_sbp_method_id: "44"
+  freekassa_sbp_method_id: "42"
 };
 
 function formatMoney(kopecks: number) {
@@ -83,6 +87,8 @@ function toPlanForm(plan: BillingPlan): PlanFormState {
 function toFreeKassaForm(settings: SystemSettings): FreeKassaFormState {
   return {
     freekassa_shop_id: settings.freekassa_shop_id ? String(settings.freekassa_shop_id) : "",
+    freekassa_public_url: settings.freekassa_public_url || "",
+    freekassa_secret_word: "",
     freekassa_api_key: "",
     freekassa_secret_word_2: "",
     freekassa_sbp_method_id: String(settings.freekassa_sbp_method_id)
@@ -462,6 +468,7 @@ function MonetizationSettingsTab({ settings }: { settings: SystemSettings }) {
           body: JSON.stringify({
             app_name: settings.app_name,
             public_app_url: settings.public_app_url,
+            freekassa_public_url: form.freekassa_public_url.trim() || null,
             trial_duration_hours: settings.trial_duration_hours,
             site_trial_duration_hours: settings.site_trial_duration_hours,
             site_trial_total_gb: settings.site_trial_total_gb,
@@ -470,6 +477,7 @@ function MonetizationSettingsTab({ settings }: { settings: SystemSettings }) {
             three_xui_verify_ssl: settings.three_xui_verify_ssl,
             bot_webhook_base_url: settings.bot_webhook_base_url,
             freekassa_shop_id: form.freekassa_shop_id ? Number(form.freekassa_shop_id) : null,
+            freekassa_secret_word: form.freekassa_secret_word.trim() || null,
             freekassa_api_key: form.freekassa_api_key.trim() || null,
             freekassa_secret_word_2: form.freekassa_secret_word_2.trim() || null,
             freekassa_sbp_method_id: Number(form.freekassa_sbp_method_id)
@@ -515,6 +523,24 @@ function MonetizationSettingsTab({ settings }: { settings: SystemSettings }) {
             min="1"
             value={form.freekassa_shop_id}
             onChange={(event) => setForm({ ...form, freekassa_shop_id: event.target.value })}
+          />
+        </label>
+
+        <label>
+          <span>Публичный URL платежей</span>
+          <input
+            value={form.freekassa_public_url}
+            onChange={(event) => setForm({ ...form, freekassa_public_url: event.target.value })}
+            placeholder="https://pay.example.com"
+          />
+        </label>
+
+        <label>
+          <span>Secret Word</span>
+          <input
+            value={form.freekassa_secret_word}
+            onChange={(event) => setForm({ ...form, freekassa_secret_word: event.target.value })}
+            placeholder={freekassa.has_secret_word ? "Сохранен" : ""}
           />
         </label>
 

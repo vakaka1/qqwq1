@@ -5,6 +5,7 @@ import hmac
 import time
 from collections.abc import Mapping
 from html import escape
+from urllib.parse import urlencode
 
 import httpx
 from sqlalchemy.orm import Session
@@ -28,6 +29,7 @@ class FreeKassaService:
     failure_path = "/fail"
     payment_redirect_path = "/pay"
     api_base_url = "https://api.fk.life/v1"
+    checkout_base_url = "https://pay.fk.money/"
 
     def __init__(self, db: Session | None = None) -> None:
         self.settings = get_settings()
@@ -48,12 +50,19 @@ class FreeKassaService:
 
             return {
                 "shop_id": current_record.freekassa_shop_id if current_record else None,
+                "public_url": (
+                    current_record.freekassa_public_url
+                    or current_record.public_app_url
+                    if current_record
+                    else None
+                ),
+                "secret_word": decrypt_secret(current_record.freekassa_secret_word_encrypted) if current_record else None,
                 "api_key": decrypt_secret(current_record.freekassa_api_key_encrypted) if current_record else None,
                 "secret_word_2": decrypt_secret(current_record.freekassa_secret_word_2_encrypted) if current_record else None,
                 "sbp_method_id": (
                     current_record.freekassa_sbp_method_id
                     if current_record and current_record.freekassa_sbp_method_id is not None
-                    else 44
+                    else 42
                 ),
                 "require_source_ip_check": self.settings.freekassa_require_source_ip_check,
                 "allowed_ips": self.settings.parsed_freekassa_allowed_ips,
@@ -64,7 +73,7 @@ class FreeKassaService:
 
     def build_public_config(self, public_app_url: str, *, record=None) -> FreeKassaConfigRead:
         runtime = self._load_runtime_config(record=record)
-        base_url = public_app_url.strip().rstrip("/")
+        base_url = self._resolve_public_url(public_app_url, runtime=runtime)
         endpoints = FreeKassaEndpointsRead(
             notification=FreeKassaEndpointRead(url=self._build_public_url(base_url, self.notification_path)),
             success=FreeKassaEndpointRead(url=self._build_public_url(base_url, self.success_path)),
@@ -72,6 +81,7 @@ class FreeKassaService:
         )
         return FreeKassaConfigRead(
             shop_id=runtime["shop_id"],
+            has_secret_word=bool(runtime["secret_word"]),
             has_api_key=bool(runtime["api_key"]),
             has_secret_word_2=bool(runtime["secret_word_2"]),
             sbp_method_id=int(runtime["sbp_method_id"]),
@@ -85,19 +95,62 @@ class FreeKassaService:
         if public_app_url is None:
             from app.services.system_settings import load_effective_system_settings
 
-            public_app_url = load_effective_system_settings().public_app_url
+            effective_settings = load_effective_system_settings()
+            public_app_url = effective_settings.freekassa_public_url or effective_settings.public_app_url
         return self._build_public_url(public_app_url.strip().rstrip("/"), f"{self.payment_redirect_path}/{redirect_token}")
 
-    def _resolve_payment_method_id(self, value: str | int) -> int:
+    def _resolve_public_url(self, fallback_public_app_url: str, *, runtime: Mapping[str, object] | None = None) -> str:
+        active_runtime = runtime or self._load_runtime_config()
+        public_url = active_runtime.get("public_url") or fallback_public_app_url
+        return str(public_url).strip().rstrip("/")
+
+    def _resolve_checkout_method_id(self, value: str | int) -> int:
         runtime = self._load_runtime_config()
         if isinstance(value, int):
             return value
         if value == "sbp":
-            return int(runtime["sbp_method_id"])
+            configured_method_id = runtime["sbp_method_id"]
+            if configured_method_id is None or int(configured_method_id) == 44:
+                return 42
+            return int(configured_method_id)
         try:
             return int(value)
         except ValueError as exc:
             raise ServiceError("Неизвестный метод оплаты FreeKassa", 400) from exc
+
+    def _resolve_payment_method_ids(self, value: str | int) -> list[int]:
+        runtime = self._load_runtime_config()
+        if isinstance(value, int):
+            return [value]
+        if value == "sbp":
+            candidates: list[int] = []
+            for candidate in (runtime["sbp_method_id"], 42, 44):
+                if candidate is None:
+                    continue
+                method_id = int(candidate)
+                if method_id not in candidates:
+                    candidates.append(method_id)
+            return candidates
+        try:
+            return [int(value)]
+        except ValueError as exc:
+            raise ServiceError("Неизвестный метод оплаты FreeKassa", 400) from exc
+
+    @staticmethod
+    def _extract_api_error(payload: Mapping[str, object], default_message: str) -> str:
+        for key in ("error", "msg", "message", "description"):
+            value = payload.get(key)
+            if value:
+                return str(value)
+        return default_message
+
+    @staticmethod
+    def _is_retryable_payment_method_error(status_code: int, message: str) -> bool:
+        normalized = message.lower()
+        return status_code in {400, 409, 422, 502} and any(
+            fragment in normalized
+            for fragment in ("валют", "currency", "недоступ", "метод", "method", "способ", "payment")
+        )
 
     def _sign_api_payload(self, payload: Mapping[str, object]) -> str:
         runtime = self._load_runtime_config()
@@ -107,6 +160,59 @@ class FreeKassaService:
         ordered_items = sorted((key, str(value)) for key, value in payload.items())
         raw = "|".join(value for _, value in ordered_items)
         return hmac.new(str(api_key).encode("utf-8"), raw.encode("utf-8"), hashlib.sha256).hexdigest()
+
+    def _post_api(self, path: str, payload: Mapping[str, object]) -> tuple[int, dict]:
+        request_payload = dict(payload)
+        request_payload["signature"] = self._sign_api_payload(request_payload)
+
+        try:
+            with httpx.Client(timeout=20.0) as client:
+                response = client.post(f"{self.api_base_url}/{path.lstrip('/')}", json=request_payload)
+        except httpx.HTTPError as exc:
+            raise ServiceError(f"Не удалось выполнить запрос к FreeKassa: {exc}", 502) from exc
+
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise ServiceError("FreeKassa вернула некорректный JSON", 502) from exc
+
+        if not isinstance(data, dict):
+            raise ServiceError("FreeKassa вернула неожиданный ответ", 502)
+        return response.status_code, data
+
+    def build_checkout_url(
+        self,
+        *,
+        merchant_order_id: str,
+        amount_kopecks: int,
+        payment_method_id: str | int,
+        payer_email: str | None = None,
+    ) -> str:
+        runtime = self._load_runtime_config()
+        shop_id = runtime["shop_id"]
+        secret_word = runtime["secret_word"]
+        if shop_id is None:
+            raise ServiceError("Не настроен Shop ID FreeKassa", 503)
+        if not secret_word:
+            raise ServiceError("Не настроен Secret Word FreeKassa", 503)
+
+        amount = f"{amount_kopecks / 100:.2f}"
+        currency = "RUB"
+        signature = hashlib.md5(
+            f"{shop_id}:{amount}:{secret_word}:{currency}:{merchant_order_id}".encode("utf-8")
+        ).hexdigest()
+        payload: dict[str, object] = {
+            "m": shop_id,
+            "oa": amount,
+            "o": merchant_order_id,
+            "currency": currency,
+            "i": self._resolve_checkout_method_id(payment_method_id),
+            "s": signature,
+            "lang": "ru",
+        }
+        if payer_email:
+            payload["em"] = payer_email
+        return f"{self.checkout_base_url}?{urlencode(payload)}"
 
     def create_payment(
         self,
@@ -124,36 +230,32 @@ class FreeKassaService:
             raise ServiceError("Не удалось определить IP плательщика для FreeKassa", 400)
 
         amount = f"{amount_kopecks / 100:.2f}"
-        payload: dict[str, object] = {
-            "shopId": runtime["shop_id"],
-            "nonce": time.time_ns(),
-            "paymentId": merchant_order_id,
-            "i": self._resolve_payment_method_id(payment_method_id),
-            "email": payer_email,
-            "ip": payer_ip,
-            "amount": amount,
-            "currency": "RUB",
-        }
-        payload["signature"] = self._sign_api_payload(payload)
+        candidate_method_ids = self._resolve_payment_method_ids(payment_method_id)
+        for index, method_id in enumerate(candidate_method_ids):
+            payload: dict[str, object] = {
+                "shopId": runtime["shop_id"],
+                "nonce": time.time_ns(),
+                "paymentId": merchant_order_id,
+                "i": method_id,
+                "email": payer_email,
+                "ip": payer_ip,
+                "amount": amount,
+                "currency": "RUB",
+            }
+            status_code, data = self._post_api("orders/create", payload)
+            if status_code < 400 and data.get("type") == "success":
+                return {**data, "selectedMethodId": method_id}
 
-        try:
-            with httpx.Client(timeout=20.0) as client:
-                response = client.post(f"{self.api_base_url}/orders/create", json=payload)
-        except httpx.HTTPError as exc:
-            raise ServiceError(f"Не удалось создать заказ в FreeKassa: {exc}", 502) from exc
+            message = self._extract_api_error(
+                data,
+                "FreeKassa не создала заказ",
+            )
+            effective_status = status_code if status_code >= 400 else 502
+            if index + 1 < len(candidate_method_ids) and self._is_retryable_payment_method_error(effective_status, message):
+                continue
+            raise ServiceError(message, effective_status)
 
-        try:
-            data = response.json()
-        except ValueError as exc:
-            raise ServiceError("FreeKassa вернула некорректный JSON", 502) from exc
-
-        if response.status_code >= 400:
-            message = data.get("error") or data.get("msg") or data.get("message") or "FreeKassa отклонила запрос"
-            raise ServiceError(str(message), response.status_code)
-        if data.get("type") != "success":
-            message = data.get("error") or data.get("msg") or data.get("message") or "FreeKassa не создала заказ"
-            raise ServiceError(str(message), 502)
-        return data
+        raise ServiceError("СБП сейчас недоступна для оплаты. Попробуйте позже.", 409)
 
     def verify_notification(
         self,
