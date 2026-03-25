@@ -45,6 +45,8 @@ class ManagedBotRunner:
                     allowed_updates=["message", "callback_query"]
                 )
                 logger.info("Установлен webhook для бота %s: %s", session.config.code, webhook_url)
+                # Keep the session registered for incoming webhook updates until the task is cancelled.
+                await asyncio.Event().wait()
             else:
                 logger.info("Webhook base URL не задан (в системных настройках), запускаю polling для бота %s", session.config.code)
                 await session.dispatcher.start_polling(session.bot)
