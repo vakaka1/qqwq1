@@ -101,6 +101,15 @@ class VpnAccessService:
     def register_bot_user(self, user_id: int, bot_id: str) -> None:
         from sqlalchemy import text
         self.db.execute(
+            text("""
+                CREATE TABLE IF NOT EXISTS bot_users (
+                    telegram_user_id INTEGER NOT NULL REFERENCES telegram_users(id),
+                    managed_bot_id TEXT NOT NULL REFERENCES managed_bots(id),
+                    PRIMARY KEY (telegram_user_id, managed_bot_id)
+                )
+            """)
+        )
+        self.db.execute(
             text("INSERT OR IGNORE INTO bot_users (telegram_user_id, managed_bot_id) VALUES (:u, :b)"),
             {"u": user_id, "b": bot_id}
         )
@@ -820,6 +829,15 @@ class VpnAccessService:
         managed_bot = self._resolve_managed_bot(bot_code)
         from sqlalchemy import text as sql_text
 
+        self.db.execute(
+            sql_text("""
+                CREATE TABLE IF NOT EXISTS bot_users (
+                    telegram_user_id INTEGER NOT NULL REFERENCES telegram_users(id),
+                    managed_bot_id TEXT NOT NULL REFERENCES managed_bots(id),
+                    PRIMARY KEY (telegram_user_id, managed_bot_id)
+                )
+            """)
+        )
         stmt = sql_text("""
             SELECT DISTINCT tu.telegram_user_id
             FROM telegram_users tu
