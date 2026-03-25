@@ -29,11 +29,16 @@ class ServerRepository:
         self.db.delete(server)
 
     def get_trial_candidates(self, product_code: str) -> list[Server]:
+        return self.get_active_candidates(product_code, trial_only=True)
+
+    def get_active_candidates(self, product_code: str, *, trial_only: bool = False) -> list[Server]:
         stmt = (
             select(Server)
-            .where(Server.is_active.is_(True), Server.is_trial_enabled.is_(True))
+            .where(Server.is_active.is_(True))
             .order_by(asc(Server.name))
         )
+        if trial_only:
+            stmt = stmt.where(Server.is_trial_enabled.is_(True))
 
         def supports(server: Server) -> bool:
             capabilities = list(server.capabilities or [])
@@ -43,8 +48,4 @@ class ServerRepository:
                 return True
             return False
 
-        return [
-            server
-            for server in self.db.scalars(stmt)
-            if supports(server)
-        ]
+        return [server for server in self.db.scalars(stmt) if supports(server)]

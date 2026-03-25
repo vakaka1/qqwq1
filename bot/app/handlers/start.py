@@ -11,7 +11,7 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandStart
 from aiogram.types import BotCommand, BufferedInputFile, CallbackQuery, InlineKeyboardMarkup, Message, User
 
-from app.keyboards.main import config_bundle_keyboard, main_menu_keyboard
+from app.keyboards.main import config_bundle_keyboard, main_menu_keyboard, payment_keyboard, plans_keyboard
 from app.services.backend_client import BackendClient, ManagedBotRuntimeConfig
 
 
@@ -58,6 +58,33 @@ def _escape_markdown_v2(value: str) -> str:
     for char in ("\\", "_", "*", "[", "]", "(", ")", "~", "`", ">", "#", "+", "-", "=", "|", "{", "}", ".", "!"):
         escaped = escaped.replace(char, f"\\{char}")
     return escaped
+
+
+def _is_internal_error_message(detail: str) -> bool:
+    lowered = detail.lower()
+    internal_markers = (
+        "3x-ui",
+        "3x_ui",
+        "freekassa",
+        "traceback",
+        "sqlalchemy",
+        "http ",
+        "/inbounds",
+        "/orders/create",
+        "connection refused",
+        "timed out",
+        "api.fk.life",
+    )
+    return any(marker in lowered for marker in internal_markers)
+
+
+def _user_visible_error(detail: str, fallback: str) -> str:
+    cleaned = detail.strip()
+    if not cleaned:
+        return fallback
+    if _is_internal_error_message(cleaned):
+        return fallback
+    return cleaned
 
 
 async def _send_text(
@@ -219,6 +246,7 @@ def _default_welcome_text(bot_config: ManagedBotRuntimeConfig) -> str:
         f"{bot_config.name}\n\n"
         "Выберите действие ниже:\n"
         "• получить тестовый доступ\n"
+        "• пополнить баланс и продлить доступ\n"
         "• проверить текущий статус\n"
         "• забрать активный конфиг\n"
         "• открыть подсказку по подключению"
@@ -231,7 +259,8 @@ def _default_help_text() -> str:
         "1. Нажмите «Получить тест 24 часа».\n"
         "2. Получите QR-код или готовый VLESS URI.\n"
         "3. Импортируйте его в совместимый клиент.\n"
-        "4. Если нужен текущий доступ, откройте «Мой конфиг»."
+        "4. Для продления сначала пополните баланс.\n"
+        "5. Затем выберите тариф в разделе продления."
     )
 
 
@@ -239,11 +268,43 @@ def _build_status_text(payload: dict) -> str:
     return (
         "Ваш статус\n\n"
         f"Пользователь: {_format_status(payload['status'])}\n"
+        f"Тест доступен: {'да' if payload['can_use_trial'] else 'нет'}\n"
         f"Тест использован: {'да' if payload['trial_used'] else 'нет'}\n"
+        f"Баланс: {payload['balance_rub']} RUB\n"
         f"Активный доступ: {_format_status(payload['active_access_status'])}\n"
         f"Сервер: {payload['server_name'] or '—'}\n"
         f"Истекает: {_format_datetime(payload['active_access_expires_at'])}"
     )
+
+
+def _build_balance_text(payload: dict) -> str:
+    wallet = payload["wallet"]
+    return (
+        "Баланс\n\n"
+        f"Доступно: {wallet['balance_rub']} RUB\n"
+        f"Тест доступен: {'да' if not wallet['trial_used'] else 'нет'}\n"
+        f"Тест истекает: {_format_datetime(wallet['trial_ends_at'])}\n\n"
+        "После оплаты баланс обновится отдельным сообщением."
+    )
+
+
+def _build_plans_text(payload: dict) -> str:
+    plans = payload.get("plans", [])
+    if not plans:
+        return "Тарифы пока не настроены."
+    lines = ["Тарифы продления", ""]
+    for plan in plans:
+        description = f" · {plan['description']}" if plan.get("description") else ""
+        lines.append(f"• {plan['name']} — {plan['duration_label']} — {plan['price_rub']} RUB{description}")
+    lines.extend(["", "Выберите тариф кнопкой ниже. Если баланса не хватает, бот предложит оплату."])
+    return "\n".join(lines)
+
+
+def _find_plan(payload: dict, plan_id: str) -> dict | None:
+    for plan in payload.get("plans", []):
+        if plan["id"] == plan_id:
+            return plan
+    return None
 
 
 async def _set_bot_commands(message: Message) -> None:
@@ -251,6 +312,8 @@ async def _set_bot_commands(message: Message) -> None:
         BotCommand(command="start", description="Главное меню"),
         BotCommand(command="status", description="Мой статус"),
         BotCommand(command="trial", description="Попробовать бесплатно"),
+        BotCommand(command="balance", description="Баланс и оплата"),
+        BotCommand(command="plans", description="Тарифы продления"),
         BotCommand(command="config", description="Получить конфиг"),
         BotCommand(command="help", description="Помощь"),
     ])
@@ -266,7 +329,7 @@ def build_router(client: BackendClient, bot_config: ManagedBotRuntimeConfig) -> 
         try:
             await client.start({"bot_code": bot_config.code, **_user_payload(message.from_user)})
         except RuntimeError as exc:
-            await message.answer(f"Backend сейчас недоступен: {exc}")
+            await message.answer(_user_visible_error(str(exc), "Сервис временно недоступен. Попробуйте позже."))
             return
 
         if bot_config.welcome_text:
@@ -282,17 +345,51 @@ def build_router(client: BackendClient, bot_config: ManagedBotRuntimeConfig) -> 
         try:
             payload = await client.get_user(user.id, bot_config.code)
         except RuntimeError as exc:
-            await message.answer(f"Не удалось получить статус: {exc}")
+            await message.answer(_user_visible_error(str(exc), "Не удалось получить статус. Попробуйте позже."))
             return
 
         await _send_text(message, _build_status_text(payload), reply_markup=main_menu_keyboard())
+
+    @router.message(Command("balance"))
+    async def balance_cmd(message: Message) -> None:
+        user = message.from_user
+        if not user:
+            return
+        try:
+            payload = await client.get_billing(user.id, bot_config.code)
+        except RuntimeError as exc:
+            await message.answer(_user_visible_error(str(exc), "Не удалось получить баланс. Попробуйте позже."))
+            return
+
+        await _send_text(
+            message,
+            _build_balance_text(payload),
+            reply_markup=plans_keyboard(payload.get("plans", []), mode="topup"),
+        )
+
+    @router.message(Command("plans"))
+    async def plans_cmd(message: Message) -> None:
+        user = message.from_user
+        if not user:
+            return
+        try:
+            payload = await client.get_billing(user.id, bot_config.code)
+        except RuntimeError as exc:
+            await message.answer(_user_visible_error(str(exc), "Не удалось загрузить тарифы. Попробуйте позже."))
+            return
+
+        await _send_text(
+            message,
+            _build_plans_text(payload),
+            reply_markup=plans_keyboard(payload.get("plans", []), mode="buy"),
+        )
 
     @router.message(Command("trial"))
     async def trial_cmd(message: Message) -> None:
         try:
             payload = await client.request_trial({"bot_code": bot_config.code, **_user_payload(message.from_user)})
         except RuntimeError as exc:
-            await message.answer(f"Не удалось выдать тест: {exc}")
+            await message.answer(_user_visible_error(str(exc), "Не удалось выдать тестовый доступ. Попробуйте позже."))
             return
 
         await _send_or_replace_config_qr(
@@ -310,7 +407,7 @@ def build_router(client: BackendClient, bot_config: ManagedBotRuntimeConfig) -> 
         try:
             payload = await client.get_config(user.id, bot_config.code)
         except RuntimeError as exc:
-            await message.answer(f"Не удалось получить конфиг: {exc}")
+            await message.answer(_user_visible_error(str(exc), "Не удалось получить конфиг. Попробуйте позже."))
             return
 
         await _send_or_replace_config_qr(
@@ -355,7 +452,9 @@ def build_router(client: BackendClient, bot_config: ManagedBotRuntimeConfig) -> 
         try:
             payload = await client.request_trial({"bot_code": bot_config.code, **_user_payload(callback.from_user)})
         except RuntimeError as exc:
-            await callback.message.answer(f"Не удалось выдать тест: {exc}")
+            await callback.message.answer(
+                _user_visible_error(str(exc), "Не удалось выдать тестовый доступ. Попробуйте позже.")
+            )
             await callback.answer()
             return
 
@@ -377,7 +476,9 @@ def build_router(client: BackendClient, bot_config: ManagedBotRuntimeConfig) -> 
         try:
             payload = await client.get_user(user.id, bot_config.code)
         except RuntimeError as exc:
-            await callback.message.answer(f"Не удалось получить статус: {exc}")
+            await callback.message.answer(
+                _user_visible_error(str(exc), "Не удалось получить статус. Попробуйте позже.")
+            )
             await callback.answer()
             return
 
@@ -385,6 +486,46 @@ def build_router(client: BackendClient, bot_config: ManagedBotRuntimeConfig) -> 
             callback.message,
             _build_status_text(payload),
             reply_markup=main_menu_keyboard(),
+        )
+        await callback.answer()
+
+    @router.callback_query(F.data == "balance")
+    async def balance(callback: CallbackQuery) -> None:
+        if not callback.message:
+            return
+        try:
+            payload = await client.get_billing(callback.from_user.id, bot_config.code)
+        except RuntimeError as exc:
+            await callback.message.answer(
+                _user_visible_error(str(exc), "Не удалось получить баланс. Попробуйте позже.")
+            )
+            await callback.answer()
+            return
+
+        await _replace_message_text(
+            callback.message,
+            _build_balance_text(payload),
+            reply_markup=plans_keyboard(payload.get("plans", []), mode="topup"),
+        )
+        await callback.answer()
+
+    @router.callback_query(F.data == "renew")
+    async def renew(callback: CallbackQuery) -> None:
+        if not callback.message:
+            return
+        try:
+            payload = await client.get_billing(callback.from_user.id, bot_config.code)
+        except RuntimeError as exc:
+            await callback.message.answer(
+                _user_visible_error(str(exc), "Не удалось загрузить тарифы. Попробуйте позже.")
+            )
+            await callback.answer()
+            return
+
+        await _replace_message_text(
+            callback.message,
+            _build_plans_text(payload),
+            reply_markup=plans_keyboard(payload.get("plans", []), mode="buy"),
         )
         await callback.answer()
 
@@ -396,7 +537,9 @@ def build_router(client: BackendClient, bot_config: ManagedBotRuntimeConfig) -> 
         try:
             payload = await client.get_config(user.id, bot_config.code)
         except RuntimeError as exc:
-            await callback.message.answer(f"Не удалось получить конфиг: {exc}")
+            await callback.message.answer(
+                _user_visible_error(str(exc), "Не удалось получить конфиг. Попробуйте позже.")
+            )
             await callback.answer()
             return
 
@@ -437,7 +580,9 @@ def build_router(client: BackendClient, bot_config: ManagedBotRuntimeConfig) -> 
         try:
             payload = await client.get_config(callback.from_user.id, bot_config.code)
         except RuntimeError as exc:
-            await callback.message.answer(f"Не удалось получить конфиг: {exc}")
+            await callback.message.answer(
+                _user_visible_error(str(exc), "Не удалось получить конфиг. Попробуйте позже.")
+            )
             await callback.answer()
             return
 
@@ -459,7 +604,121 @@ def build_router(client: BackendClient, bot_config: ManagedBotRuntimeConfig) -> 
                 summary=payload["config_text"],
                 config_uri=payload["config_uri"],
                 replace=True,
-            )
+                )
         await callback.answer()
+
+    @router.callback_query(F.data.startswith("plan:"))
+    async def plan_action(callback: CallbackQuery) -> None:
+        if not callback.message or not callback.data:
+            await callback.answer()
+            return
+
+        _, mode, plan_id = callback.data.split(":", maxsplit=2)
+        try:
+            billing = await client.get_billing(callback.from_user.id, bot_config.code)
+        except RuntimeError as exc:
+            await callback.message.answer(
+                _user_visible_error(str(exc), "Не удалось загрузить тарифы. Попробуйте позже.")
+            )
+            await callback.answer()
+            return
+
+        plan = _find_plan(billing, plan_id)
+        if not plan:
+            await callback.message.answer("Тариф больше недоступен.")
+            await callback.answer()
+            return
+
+        if mode == "topup":
+            try:
+                payment = await client.create_top_up_payment(
+                    {
+                        "bot_code": bot_config.code,
+                        "telegram_user_id": callback.from_user.id,
+                        "plan_id": plan_id,
+                        "cover_shortfall_for_plan": False,
+                    }
+                )
+            except RuntimeError as exc:
+                await callback.message.answer(
+                    _user_visible_error(str(exc), "Не удалось открыть оплату. Попробуйте позже.")
+                )
+                await callback.answer()
+                return
+
+            text = (
+                "Пополнение баланса\n\n"
+                f"Сумма: {payment['amount_rub']} RUB\n"
+                "Нажмите кнопку ниже, откроется страница оплаты."
+            )
+            await _replace_message_text(
+                callback.message,
+                text,
+                reply_markup=payment_keyboard(payment["payment_url"]),
+            )
+            await callback.answer("Ссылка на оплату готова")
+            return
+
+        if billing["wallet"]["balance_kopecks"] < plan["price_kopecks"]:
+            try:
+                payment = await client.create_top_up_payment(
+                    {
+                        "bot_code": bot_config.code,
+                        "telegram_user_id": callback.from_user.id,
+                        "plan_id": plan_id,
+                        "cover_shortfall_for_plan": True,
+                    }
+                )
+            except RuntimeError as exc:
+                await callback.message.answer(
+                    _user_visible_error(str(exc), "Не удалось открыть оплату. Попробуйте позже.")
+                )
+                await callback.answer()
+                return
+
+            text = (
+                "Недостаточно средств\n\n"
+                f"Тариф: {plan['name']}\n"
+                f"Стоимость: {plan['price_rub']} RUB\n"
+                f"К доплате: {payment['amount_rub']} RUB\n\n"
+                "Нажмите кнопку ниже, чтобы пополнить баланс."
+            )
+            await _replace_message_text(
+                callback.message,
+                text,
+                reply_markup=payment_keyboard(payment["payment_url"]),
+            )
+            await callback.answer("Нужно пополнить баланс")
+            return
+
+        try:
+            purchase = await client.purchase_plan(
+                {
+                    "bot_code": bot_config.code,
+                    "telegram_user_id": callback.from_user.id,
+                    "plan_id": plan_id,
+                }
+            )
+        except RuntimeError as exc:
+            await callback.message.answer(
+                _user_visible_error(str(exc), "Не удалось продлить доступ. Попробуйте позже.")
+            )
+            await callback.answer()
+            return
+
+        summary = (
+            f"Списано: {purchase['charged_rub']} RUB\n"
+            f"Остаток: {purchase['balance_rub']} RUB\n"
+            f"Истекает: {_format_datetime(purchase['expires_at'])}"
+        )
+        await _send_or_replace_config_qr(
+            callback.message,
+            bundle_kind="config",
+            title="Доступ продлен",
+            summary=summary,
+            config_uri=purchase["config_uri"],
+            replace=True,
+        )
+        await callback.answer("Доступ продлен")
 
     return router

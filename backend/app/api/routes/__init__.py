@@ -10,6 +10,7 @@ from app.api.routes import (
     dashboard,
     freekassa,
     logs,
+    monetization,
     servers,
     site_runtime,
     sites,
@@ -29,6 +30,7 @@ api_router.include_router(users.router, prefix="/users", tags=["users"])
 api_router.include_router(accesses.router, prefix="/accesses", tags=["accesses"])
 api_router.include_router(logs.router, prefix="/logs", tags=["logs"])
 api_router.include_router(system_settings.router, prefix="/system-settings", tags=["system-settings"])
+api_router.include_router(monetization.router, prefix="/monetization", tags=["monetization"])
 api_router.include_router(bot.router, prefix="/bot", tags=["bot"])
 api_router.include_router(bot_runtime.router, prefix="/bot-runtime", tags=["bot-runtime"])
 api_router.include_router(site_runtime.router, prefix="/site-runtime", tags=["site-runtime"])

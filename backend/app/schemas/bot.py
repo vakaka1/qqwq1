@@ -19,9 +19,12 @@ class BotUserRead(BaseModel):
     telegram_user_id: int
     username: str | None
     status: str
+    can_use_trial: bool
     trial_used: bool
     trial_started_at: datetime | None
     trial_ends_at: datetime | None
+    balance_kopecks: int = 0
+    balance_rub: str = "0.00"
     active_access_id: str | None = None
     active_access_status: str | None = None
     active_access_expires_at: datetime | None = None

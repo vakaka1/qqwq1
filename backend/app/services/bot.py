@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from app.schemas.bot import BotStartRequest
 from app.schemas.common import MessageResponse
 from app.services.managed_bots import ManagedBotService
+from app.services.monetization import MonetizationService
 from app.services.vpn_accesses import VpnAccessService
 
 
@@ -24,6 +25,6 @@ class BotService:
             language_code=payload.language_code,
         )
         self.access_service.register_bot_user(user.id, bot.id)
+        MonetizationService(self.db).get_or_create_wallet(user, bot)
         self.db.commit()
         return MessageResponse(message="Пользователь зарегистрирован")
-

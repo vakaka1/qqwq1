@@ -19,6 +19,7 @@ from app.repositories.managed_bot import ManagedBotRepository
 from app.repositories.server import ServerRepository
 from app.repositories.site import SiteRepository
 from app.repositories.telegram_user import TelegramUserRepository
+from app.repositories.user_wallet import UserWalletRepository
 from app.repositories.vpn_access import VpnAccessRepository
 from app.schemas.bot import BotTrialResponse, BotUserRead
 from app.schemas.site import SiteRuntimeConfigResponse
@@ -40,6 +41,7 @@ class VpnAccessService:
         self.servers = ServerRepository(db)
         self.sites = SiteRepository(db)
         self.accesses = VpnAccessRepository(db)
+        self.wallets = UserWalletRepository(db)
         self.audit = AuditService(db)
         self.generator = ConfigGenerator()
         self.bot_messenger = BotMessengerService()
@@ -115,16 +117,45 @@ class VpnAccessService:
         )
         self.db.flush()
 
-    def _choose_trial_server(self, product_code: str) -> Server:
-        candidates = self.servers.get_trial_candidates(product_code)
+    def _ensure_wallet(self, user: TelegramUser, managed_bot: ManagedBot):
+        wallet = self.wallets.get_for_user_and_bot(user.id, managed_bot.id)
+        if wallet:
+            if wallet.trial_used_at is None:
+                latest_trial = self.accesses.get_latest_trial_for_telegram_user_and_bot(user.telegram_user_id, managed_bot.id)
+                if latest_trial:
+                    wallet.trial_used_at = latest_trial.activated_at
+                    wallet.trial_started_at = latest_trial.activated_at
+                    wallet.trial_ends_at = latest_trial.expiry_at
+                    self.db.flush()
+            return wallet
+
+        from app.models.user_wallet import UserWallet
+
+        latest_trial = self.accesses.get_latest_trial_for_telegram_user_and_bot(user.telegram_user_id, managed_bot.id)
+        wallet = UserWallet(
+            telegram_user_id=user.id,
+            managed_bot_id=managed_bot.id,
+            balance_kopecks=0,
+            trial_used_at=latest_trial.activated_at if latest_trial else None,
+            trial_started_at=latest_trial.activated_at if latest_trial else None,
+            trial_ends_at=latest_trial.expiry_at if latest_trial else None,
+        )
+        self.wallets.create(wallet)
+        return wallet
+
+    def _choose_server(self, product_code: str, *, trial_only: bool) -> Server:
+        candidates = self.servers.get_active_candidates(product_code, trial_only=trial_only)
         if not candidates:
-            raise ServiceError("Нет доступных серверов для выдачи теста", 409)
+            if trial_only:
+                raise ServiceError("Нет доступных серверов для выдачи теста", 409)
+            raise ServiceError("Нет доступных серверов для выдачи платного доступа", 409)
         if len(candidates) == 1:
             return candidates[0]
 
-        active_counts = self.accesses.get_active_trial_counts_by_server(
+        active_counts = self.accesses.get_active_counts_by_server(
             product_code=product_code,
             server_ids=[server.id for server in candidates],
+            access_type="test" if trial_only else None,
         )
 
         def normalized_load(server: Server) -> float:
@@ -136,6 +167,12 @@ class VpnAccessService:
         least_loaded = [server for server in candidates if loads[server.id] == min_load]
         weights = [max(server.weight, 1) for server in least_loaded]
         return choices(least_loaded, weights=weights, k=1)[0]
+
+    def _choose_trial_server(self, product_code: str) -> Server:
+        return self._choose_server(product_code, trial_only=True)
+
+    def _choose_paid_server(self, product_code: str) -> Server:
+        return self._choose_server(product_code, trial_only=False)
 
     def _resolve_managed_bot(self, bot_code: str) -> ManagedBot:
         managed_bot = self.managed_bots.get_by_code(bot_code)
@@ -239,6 +276,138 @@ class VpnAccessService:
         self.accesses.create(access)
         return access
 
+    def _load_access_metadata(self, access: VpnAccess) -> tuple[dict, dict]:
+        metadata = dict(access.config_metadata or {})
+        remote_client = parse_json_field(metadata.get("remote_client"))
+        inbound_snapshot = parse_json_field(metadata.get("inbound_snapshot"))
+        if not remote_client:
+            raise ServiceError("Не удалось восстановить metadata клиента для доступа", 500)
+        if not inbound_snapshot:
+            inbound_snapshot = build_three_x_ui_adapter(access.server).get_inbound(access.inbound_id)
+            metadata["inbound_snapshot"] = inbound_snapshot
+        return metadata, remote_client
+
+    def _upsert_remote_client(self, access: VpnAccess, remote_client: dict) -> None:
+        adapter = build_three_x_ui_adapter(access.server)
+        try:
+            adapter.update_client(access.remote_client_id, access.inbound_id, remote_client)
+            return
+        except ThreeXUIError as update_exc:
+            try:
+                adapter.add_client(access.inbound_id, remote_client)
+                return
+            except ThreeXUIError as add_exc:
+                raise ServiceError(
+                    f"Не удалось синхронизировать клиента в 3x-ui: update={update_exc}; add={add_exc}",
+                    502,
+                ) from add_exc
+
+    def _activate_or_extend_existing_access(
+        self,
+        access: VpnAccess,
+        *,
+        expiry_at: datetime,
+        access_type: str | None = None,
+    ) -> VpnAccess:
+        metadata, remote_client = self._load_access_metadata(access)
+        remote_client["expiryTime"] = datetime_to_millis(expiry_at)
+        remote_client["enable"] = True
+        self._upsert_remote_client(access, remote_client)
+
+        access.expiry_at = expiry_at
+        access.status = AccessStatus.ACTIVE.value
+        access.deactivated_at = None
+        if access_type:
+            access.access_type = access_type
+
+        metadata["remote_client"] = remote_client
+        access.config_metadata = metadata
+        self._regenerate_access_config(access)
+        return access
+
+    def _create_user_access(
+        self,
+        *,
+        user: TelegramUser,
+        managed_bot: ManagedBot,
+        access_type: str,
+        duration_hours: int,
+        server: Server | None = None,
+    ) -> VpnAccess:
+        product_code = managed_bot.product_code
+        selected_server = server or (
+            self._choose_trial_server(product_code) if access_type == AccessType.TEST.value else self._choose_paid_server(product_code)
+        )
+        adapter = build_three_x_ui_adapter(selected_server)
+        expiry_at = datetime.now(timezone.utc) + timedelta(hours=duration_hours)
+        client_uuid = str(uuid4())
+        email = self._build_remote_client_email(
+            server=selected_server,
+            product_code=product_code,
+            email_root=str(user.telegram_user_id),
+            client_uuid=client_uuid,
+        )
+        remote_client = self._build_remote_client_payload(
+            server=selected_server,
+            email=email,
+            client_uuid=client_uuid,
+            expiry_at=expiry_at,
+            device_limit=1,
+            telegram_user_id=user.telegram_user_id,
+            flow=selected_server.client_flow,
+        )
+        try:
+            inbound = adapter.get_inbound(selected_server.inbound_id)
+            adapter.add_client(selected_server.inbound_id, remote_client)
+        except ThreeXUIError as exc:
+            raise ServiceError(f"Не удалось создать клиента в 3x-ui: {exc}", 502) from exc
+
+        access_stub = VpnAccess(client_uuid=client_uuid, client_email=email, expiry_at=expiry_at)
+        config_bundle = self.generator.generate_vless(
+            server=selected_server,
+            access=access_stub,
+            inbound=inbound,
+            client_payload=remote_client,
+        )
+        return self._create_access_record(
+            user=user,
+            managed_bot=managed_bot,
+            site=None,
+            server=selected_server,
+            access_type=access_type,
+            product_code=product_code,
+            device_limit=1,
+            expiry_at=expiry_at,
+            remote_client=remote_client,
+            config_bundle=config_bundle,
+            inbound_snapshot=inbound,
+        )
+
+    def ensure_paid_access_for_user(
+        self,
+        *,
+        managed_bot: ManagedBot,
+        user: TelegramUser,
+        duration_hours: int,
+    ) -> VpnAccess:
+        existing_access = self.accesses.get_latest_for_telegram_user_and_bot(user.telegram_user_id, managed_bot.id)
+        if existing_access:
+            expiry_at = max(existing_access.expiry_at, datetime.now(timezone.utc)) + timedelta(hours=duration_hours)
+            access = self._activate_or_extend_existing_access(
+                existing_access,
+                expiry_at=expiry_at,
+                access_type=AccessType.PAID.value,
+            )
+        else:
+            access = self._create_user_access(
+                user=user,
+                managed_bot=managed_bot,
+                access_type=AccessType.PAID.value,
+                duration_hours=duration_hours,
+            )
+        user.status = UserStatus.ACTIVE.value
+        return access
+
     def _refresh_user_status(self, user: TelegramUser | None) -> None:
         if user is None:
             return
@@ -281,7 +450,6 @@ class VpnAccessService:
         language_code: str | None,
     ) -> BotTrialResponse:
         managed_bot = self._resolve_managed_bot(bot_code)
-        product_code = managed_bot.product_code
         user = self._get_or_create_user(
             telegram_user_id,
             username=username,
@@ -289,35 +457,34 @@ class VpnAccessService:
             last_name=last_name,
             language_code=language_code,
         )
-        if self.accesses.has_trial_for_user_and_bot(user.id, managed_bot.id):
+        wallet = self._ensure_wallet(user, managed_bot)
+        trial_already_used = wallet.trial_used_at is not None or self.accesses.has_trial_for_user_and_bot(user.id, managed_bot.id)
+        if trial_already_used:
             raise ServiceError(
                 "Тестовый доступ уже был выдан ранее",
                 409,
             )
 
-        server = self._choose_trial_server(product_code)
-        adapter = build_three_x_ui_adapter(server)
-        expiry_at = datetime.now(timezone.utc) + timedelta(hours=self._trial_duration_hours())
-        client_uuid = str(uuid4())
-        email = self._build_remote_client_email(
-            server=server,
-            product_code=product_code,
-            email_root=str(telegram_user_id),
-            client_uuid=client_uuid,
-        )
-        remote_client = self._build_remote_client_payload(
-            server=server,
-            email=email,
-            client_uuid=client_uuid,
-            expiry_at=expiry_at,
-            device_limit=1,
-            telegram_user_id=telegram_user_id,
-            flow=server.client_flow,
-        )
+        trial_started_at = datetime.now(timezone.utc)
+        existing_access = self.accesses.get_latest_for_telegram_user_and_bot(telegram_user_id, managed_bot.id)
         try:
-            inbound = adapter.get_inbound(server.inbound_id)
-            adapter.add_client(server.inbound_id, remote_client)
-        except ThreeXUIError as exc:
+            if existing_access:
+                expiry_at = max(existing_access.expiry_at, trial_started_at) + timedelta(hours=self._trial_duration_hours())
+                next_access_type = existing_access.access_type if existing_access.access_type == AccessType.PAID.value else AccessType.TEST.value
+                access = self._activate_or_extend_existing_access(
+                    existing_access,
+                    expiry_at=expiry_at,
+                    access_type=next_access_type,
+                )
+            else:
+                access = self._create_user_access(
+                    user=user,
+                    managed_bot=managed_bot,
+                    access_type=AccessType.TEST.value,
+                    duration_hours=self._trial_duration_hours(),
+                )
+                expiry_at = access.expiry_at
+        except ServiceError as exc:
             self.audit.log(
                 actor_type="bot",
                 actor_id=str(telegram_user_id),
@@ -326,32 +493,17 @@ class VpnAccessService:
                 entity_id=str(telegram_user_id),
                 level="error",
                 message="Ошибка при выдаче теста",
-                payload={"error": str(exc), "server_id": server.id, "bot_code": managed_bot.code},
+                payload={"error": exc.message, "bot_code": managed_bot.code},
             )
             self.db.commit()
-            raise ServiceError(f"Не удалось создать клиента в 3x-ui: {exc}", 502) from exc
-
-        access_stub = VpnAccess(client_uuid=client_uuid, client_email=email, expiry_at=expiry_at)
-        config_bundle = self.generator.generate_vless(
-            server=server, access=access_stub, inbound=inbound, client_payload=remote_client
-        )
-        access = self._create_access_record(
-            user=user,
-            managed_bot=managed_bot,
-            site=None,
-            server=server,
-            access_type=AccessType.TEST.value,
-            product_code=product_code,
-            device_limit=1,
-            expiry_at=expiry_at,
-            remote_client=remote_client,
-            config_bundle=config_bundle,
-            inbound_snapshot=inbound,
-        )
+            raise
         user.trial_used = True
-        user.trial_started_at = datetime.now(timezone.utc)
+        user.trial_started_at = trial_started_at
         user.trial_ends_at = expiry_at
         user.status = UserStatus.ACTIVE.value
+        wallet.trial_used_at = trial_started_at
+        wallet.trial_started_at = trial_started_at
+        wallet.trial_ends_at = expiry_at
         self.audit.log(
             actor_type="bot",
             actor_id=str(telegram_user_id),
@@ -360,10 +512,11 @@ class VpnAccessService:
             entity_id=access.id,
             message=f"Выдан тест пользователю {telegram_user_id}",
             payload={
-                "server_id": server.id,
+                "server_id": access.server_id,
                 "expires_at": expiry_at.isoformat(),
                 "bot_code": managed_bot.code,
-                "product_code": product_code,
+                "product_code": managed_bot.product_code,
+                "reused_existing_access": existing_access is not None,
             },
         )
         self.db.commit()
@@ -375,7 +528,7 @@ class VpnAccessService:
             config_uri=access.config_uri or "",
             config_text=access.config_text or "",
             expires_at=access.expiry_at,
-            server_name=server.name,
+            server_name=access.server.name,
         )
 
     def _to_site_runtime_response(self, *, site: Site, access: VpnAccess) -> SiteRuntimeConfigResponse:
@@ -614,24 +767,8 @@ class VpnAccessService:
         access = self.accesses.get(access_id)
         if not access:
             raise ServiceError("Доступ не найден", 404)
-        server = access.server
-        remote_client = dict(access.config_metadata.get("remote_client", {}))
-        if not remote_client:
-            raise ServiceError("Не удалось восстановить metadata клиента для продления", 500)
-        access.expiry_at = max(access.expiry_at, datetime.now(timezone.utc)) + timedelta(hours=hours)
-        access.status = AccessStatus.ACTIVE.value
-        remote_client["expiryTime"] = datetime_to_millis(access.expiry_at)
-        remote_client["enable"] = True
-        adapter = build_three_x_ui_adapter(server)
-        try:
-            adapter.update_client(access.remote_client_id, access.inbound_id, remote_client)
-        except ThreeXUIError as exc:
-            raise ServiceError(f"Не удалось продлить клиента в 3x-ui: {exc}", 502) from exc
-
-        metadata = dict(access.config_metadata or {})
-        metadata["remote_client"] = remote_client
-        access.config_metadata = metadata
-        self._regenerate_access_config(access)
+        expiry_at = max(access.expiry_at, datetime.now(timezone.utc)) + timedelta(hours=hours)
+        self._activate_or_extend_existing_access(access, expiry_at=expiry_at)
         self.audit.log(
             actor_type="admin",
             actor_id=actor_id,
@@ -717,8 +854,8 @@ class VpnAccessService:
         user = self.users.get_by_telegram_id(telegram_user_id)
         if not user:
             raise ServiceError("Пользователь не найден", 404)
+        wallet = self._ensure_wallet(user, managed_bot)
         latest_access = self.accesses.get_latest_for_telegram_user_and_bot(telegram_user_id, managed_bot.id)
-        latest_trial = self.accesses.get_latest_trial_for_telegram_user_and_bot(telegram_user_id, managed_bot.id)
         active_access = self.accesses.get_latest_active_for_telegram_user_and_bot(telegram_user_id, managed_bot.id)
         scoped_status = active_access.status if active_access else (latest_access.status if latest_access else UserStatus.NEW.value)
         return BotUserRead(
@@ -726,9 +863,12 @@ class VpnAccessService:
             telegram_user_id=user.telegram_user_id,
             username=user.username,
             status=scoped_status,
-            trial_used=latest_trial is not None,
-            trial_started_at=latest_trial.activated_at if latest_trial else None,
-            trial_ends_at=latest_trial.expiry_at if latest_trial else None,
+            can_use_trial=wallet.trial_used_at is None,
+            trial_used=wallet.trial_used_at is not None,
+            trial_started_at=wallet.trial_started_at,
+            trial_ends_at=wallet.trial_ends_at,
+            balance_kopecks=wallet.balance_kopecks,
+            balance_rub=f"{wallet.balance_kopecks // 100}.{wallet.balance_kopecks % 100:02d}",
             active_access_id=active_access.id if active_access else None,
             active_access_status=active_access.status if active_access else None,
             active_access_expires_at=active_access.expiry_at if active_access else None,

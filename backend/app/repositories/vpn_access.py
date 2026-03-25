@@ -228,19 +228,31 @@ class VpnAccessRepository:
         product_code: str,
         server_ids: list[str],
     ) -> dict[str, int]:
+        return self.get_active_counts_by_server(
+            product_code=product_code,
+            server_ids=server_ids,
+            access_type="test",
+        )
+
+    def get_active_counts_by_server(
+        self,
+        *,
+        product_code: str,
+        server_ids: list[str],
+        access_type: str | None = None,
+    ) -> dict[str, int]:
         if not server_ids:
             return {}
 
-        stmt = (
-            select(VpnAccess.server_id, func.count(VpnAccess.id))
-            .where(
-                VpnAccess.server_id.in_(server_ids),
-                VpnAccess.product_code == product_code,
-                VpnAccess.access_type == "test",
-                VpnAccess.status == "active",
-            )
-            .group_by(VpnAccess.server_id)
-        )
+        conditions = [
+            VpnAccess.server_id.in_(server_ids),
+            VpnAccess.product_code == product_code,
+            VpnAccess.status == "active",
+        ]
+        if access_type:
+            conditions.append(VpnAccess.access_type == access_type)
+
+        stmt = select(VpnAccess.server_id, func.count(VpnAccess.id)).where(*conditions).group_by(VpnAccess.server_id)
         return {
             str(server_id): int(total or 0)
             for server_id, total in self.db.execute(stmt).all()

@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
+import time
 from collections.abc import Mapping
 from html import escape
+
+import httpx
 
 from app.config.settings import get_settings
 from app.core.security import secure_compare
@@ -20,6 +24,8 @@ class FreeKassaService:
     notification_path = "/notify"
     success_path = "/success"
     failure_path = "/fail"
+    payment_redirect_path = "/pay"
+    api_base_url = "https://api.fk.life/v1"
 
     def __init__(self) -> None:
         self.settings = get_settings()
@@ -32,29 +38,98 @@ class FreeKassaService:
             failure=FreeKassaEndpointRead(url=self._build_public_url(base_url, self.failure_path)),
         )
         notes = [
-            "В кабинете FreeKassa для всех трех URL установите метод POST.",
-            "Подпись формы оплаты считается как md5(shopId:amount:secret word:currency:orderId).",
-            "Подпись уведомления считается как md5(MERCHANT_ID:AMOUNT:secret word 2:MERCHANT_ORDER_ID).",
-            "Success URL нужен только для возврата пользователя. Подтверждать оплату нужно по notification URL.",
-            "Если в кабинете включено подтверждение платежа, notification URL должен отвечать ровно YES.",
+            "В кабинете FreeKassa укажи URL оповещения, успеха и неудачи из этой страницы.",
+            "Для оплаты через СБП используется API FreeKassa и метод ID СБП из настроек.",
+            "Подтверждение оплаты нужно принимать только по notification URL, а не по success URL.",
         ]
-        if self.settings.parsed_freekassa_allowed_ips:
-            notes.append(
-                "FreeKassa рекомендует проверять IP источника уведомлений: "
-                + ", ".join(self.settings.parsed_freekassa_allowed_ips)
-                + "."
-            )
+        if self.settings.freekassa_require_source_ip_check:
+            notes.append("Проверка IP источника уведомлений включена.")
         if not self.settings.freekassa_secret_word_2:
-            notes.append("FREEKASSA_SECRET_WORD_2 пока не задан, поэтому верификация notification URL не будет работать.")
+            notes.append("FREEKASSA_SECRET_WORD_2 не задан.")
+        if not self.settings.freekassa_api_key:
+            notes.append("FREEKASSA_API_KEY не задан.")
         return FreeKassaConfigRead(
             shop_id=self.settings.freekassa_shop_id,
+            has_api_key=bool(self.settings.freekassa_api_key),
             has_secret_word=bool(self.settings.freekassa_secret_word),
             has_secret_word_2=bool(self.settings.freekassa_secret_word_2),
+            sbp_method_id=self.settings.freekassa_sbp_method_id,
             require_source_ip_check=self.settings.freekassa_require_source_ip_check,
             allowed_ips=self.settings.parsed_freekassa_allowed_ips,
             endpoints=endpoints,
             notes=notes,
         )
+
+    def build_payment_redirect_url(self, redirect_token: str, public_app_url: str | None = None) -> str:
+        if public_app_url is None:
+            from app.services.system_settings import load_effective_system_settings
+
+            public_app_url = load_effective_system_settings().public_app_url
+        return self._build_public_url(public_app_url.strip().rstrip("/"), f"{self.payment_redirect_path}/{redirect_token}")
+
+    def _resolve_payment_method_id(self, value: str | int) -> int:
+        if isinstance(value, int):
+            return value
+        if value == "sbp":
+            return self.settings.freekassa_sbp_method_id
+        try:
+            return int(value)
+        except ValueError as exc:
+            raise ServiceError("Неизвестный метод оплаты FreeKassa", 400) from exc
+
+    def _sign_api_payload(self, payload: Mapping[str, object]) -> str:
+        api_key = self.settings.freekassa_api_key
+        if not api_key:
+            raise ServiceError("FREEKASSA_API_KEY не настроен", 503)
+        ordered_items = sorted((key, str(value)) for key, value in payload.items())
+        raw = "|".join(value for _, value in ordered_items)
+        return hmac.new(api_key.encode("utf-8"), raw.encode("utf-8"), hashlib.sha256).hexdigest()
+
+    def create_payment(
+        self,
+        *,
+        merchant_order_id: str,
+        amount_kopecks: int,
+        payment_method_id: str | int,
+        payer_email: str,
+        payer_ip: str | None,
+    ) -> dict:
+        if self.settings.freekassa_shop_id is None:
+            raise ServiceError("FREEKASSA_SHOP_ID не настроен", 503)
+        if not payer_ip:
+            raise ServiceError("Не удалось определить IP плательщика для FreeKassa", 400)
+
+        amount = f"{amount_kopecks / 100:.2f}"
+        payload: dict[str, object] = {
+            "shopId": self.settings.freekassa_shop_id,
+            "nonce": time.time_ns(),
+            "paymentId": merchant_order_id,
+            "i": self._resolve_payment_method_id(payment_method_id),
+            "email": payer_email,
+            "ip": payer_ip,
+            "amount": amount,
+            "currency": "RUB",
+        }
+        payload["signature"] = self._sign_api_payload(payload)
+
+        try:
+            with httpx.Client(timeout=20.0) as client:
+                response = client.post(f"{self.api_base_url}/orders/create", json=payload)
+        except httpx.HTTPError as exc:
+            raise ServiceError(f"Не удалось создать заказ в FreeKassa: {exc}", 502) from exc
+
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise ServiceError("FreeKassa вернула некорректный JSON", 502) from exc
+
+        if response.status_code >= 400:
+            message = data.get("error") or data.get("msg") or data.get("message") or "FreeKassa отклонила запрос"
+            raise ServiceError(str(message), response.status_code)
+        if data.get("type") != "success":
+            message = data.get("error") or data.get("msg") or data.get("message") or "FreeKassa не создала заказ"
+            raise ServiceError(str(message), 502)
+        return data
 
     def verify_notification(
         self,
@@ -144,12 +219,27 @@ class FreeKassaService:
         escaped_title = escape(status_title)
         escaped_message = escape(status_message)
         escaped_order_id = escape(order_id)
+        return self._render_html_page(
+            title=escaped_title,
+            message=escaped_message,
+            order_id=escaped_order_id,
+        )
+
+    def render_error_page(self, *, title: str, message: str, order_id: str | None = None) -> str:
+        return self._render_html_page(
+            title=escape(title),
+            message=escape(message),
+            order_id=escape(order_id) if order_id else None,
+        )
+
+    def _render_html_page(self, *, title: str, message: str, order_id: str | None = None) -> str:
+        order_markup = f"<strong>Заказ: {order_id}</strong>" if order_id else ""
         return f"""<!doctype html>
 <html lang="ru">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>{escaped_title}</title>
+    <title>{title}</title>
     <style>
       body {{
         margin: 0;
@@ -186,9 +276,9 @@ class FreeKassaService:
   </head>
   <body>
     <main>
-      <h1>{escaped_title}</h1>
-      <p>{escaped_message}</p>
-      <strong>Заказ: {escaped_order_id}</strong>
+      <h1>{title}</h1>
+      <p>{message}</p>
+      {order_markup}
     </main>
   </body>
 </html>"""

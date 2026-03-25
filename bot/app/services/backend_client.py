@@ -68,6 +68,30 @@ class BackendClient:
             headers={"X-Bot-Token": self.bot_token},
         )
 
+    async def get_billing(self, telegram_user_id: int, bot_code: str) -> dict[str, Any]:
+        query = urlencode({"bot_code": bot_code})
+        return await self._request(
+            "GET",
+            f"/bot/billing/{telegram_user_id}?{query}",
+            headers={"X-Bot-Token": self.bot_token},
+        )
+
+    async def create_top_up_payment(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self._request(
+            "POST",
+            "/bot/payments",
+            headers={"X-Bot-Token": self.bot_token},
+            json=payload,
+        )
+
+    async def purchase_plan(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self._request(
+            "POST",
+            "/bot/purchase-plan",
+            headers={"X-Bot-Token": self.bot_token},
+            json=payload,
+        )
+
     async def get_config(self, telegram_user_id: int, bot_code: str) -> dict[str, Any]:
         query = urlencode({"bot_code": bot_code})
         return await self._request(

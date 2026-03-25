@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.services.audit import AuditService
 from app.services.freekassa import FreeKassaService
 from app.services.exceptions import ServiceError
+from app.services.monetization import MonetizationService
 
 router = APIRouter()
 
@@ -23,10 +24,12 @@ async def _extract_request_payload(request: Request) -> dict[str, str]:
 async def freekassa_notify(request: Request, db: Session = Depends(get_db)) -> PlainTextResponse:
     service = FreeKassaService()
     audit = AuditService(db)
+    monetization = MonetizationService(db)
     payload = await _extract_request_payload(request)
     source_ip = service.resolve_source_ip(request.headers, request.client.host if request.client else None)
     try:
         notification = service.verify_notification(payload, source_ip=source_ip)
+        monetization.apply_successful_payment_notification(notification)
     except ServiceError as exc:
         audit.log(
             actor_type="payment_gateway",
@@ -40,18 +43,26 @@ async def freekassa_notify(request: Request, db: Session = Depends(get_db)) -> P
         )
         db.commit()
         return PlainTextResponse(exc.message, status_code=exc.status_code)
-
-    audit.log(
-        actor_type="payment_gateway",
-        actor_id=source_ip,
-        event_type="freekassa_notification_accepted",
-        entity_type="freekassa_payment",
-        entity_id=notification.merchant_order_id,
-        message=f"Принято уведомление FreeKassa по заказу {notification.merchant_order_id}",
-        payload=notification.model_dump(),
-    )
-    db.commit()
     return PlainTextResponse("YES")
+
+
+@router.get("/pay/{payment_token}")
+def freekassa_redirect(payment_token: str, request: Request, db: Session = Depends(get_db)):
+    service = FreeKassaService()
+    monetization = MonetizationService(db)
+    source_ip = service.resolve_source_ip(request.headers, request.client.host if request.client else None)
+    try:
+        redirect_url = monetization.prepare_payment_redirect(payment_token, source_ip=source_ip)
+    except ServiceError as exc:
+        return HTMLResponse(
+            service.render_error_page(
+                title="Не удалось открыть оплату",
+                message=exc.message,
+                order_id=payment_token,
+            ),
+            status_code=exc.status_code,
+        )
+    return RedirectResponse(url=redirect_url, status_code=307)
 
 
 @router.post("/success", response_class=HTMLResponse)

@@ -29,8 +29,10 @@ class Settings(BaseSettings):
         default="http://localhost:5173,http://127.0.0.1:5173,http://localhost:8000"
     )
     freekassa_shop_id: int | None = None
+    freekassa_api_key: str | None = None
     freekassa_secret_word: str | None = None
     freekassa_secret_word_2: str | None = None
+    freekassa_sbp_method_id: int = 44
     freekassa_allowed_ips: str = "168.119.157.136,168.119.60.227,178.154.197.79,51.250.54.238"
     freekassa_require_source_ip_check: bool = False
 

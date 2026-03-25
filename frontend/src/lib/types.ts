@@ -268,8 +268,10 @@ export interface FreeKassaEndpoint {
 
 export interface FreeKassaSettings {
   shop_id: number | null;
+  has_api_key: boolean;
   has_secret_word: boolean;
   has_secret_word_2: boolean;
+  sbp_method_id: number;
   require_source_ip_check: boolean;
   allowed_ips: string[];
   endpoints: {
@@ -294,4 +296,46 @@ export interface SystemSettings {
   warnings: string[];
   updated_at: string | null;
   freekassa: FreeKassaSettings | null;
+}
+
+export interface BillingPlan {
+  id: string;
+  managed_bot_id: string;
+  name: string;
+  description: string | null;
+  duration_hours: number;
+  price_kopecks: number;
+  sort_order: number;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MonetizationPayment {
+  id: string;
+  merchant_order_id: string;
+  amount_kopecks: number;
+  currency: string;
+  status: string;
+  provider: string;
+  payment_method: string;
+  purpose: string;
+  source_ip: string | null;
+  payer_email: string | null;
+  external_order_id: string | null;
+  external_payment_id: string | null;
+  provider_payment_url: string | null;
+  paid_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MonetizationSummary {
+  total_plans: number;
+  active_plans: number;
+  pending_payments: number;
+  paid_payments: number;
+  paid_total_kopecks: number;
+  paid_total_rub: string;
+  recent_payments: MonetizationPayment[];
 }
