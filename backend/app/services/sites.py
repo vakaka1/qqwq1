@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 from sqlalchemy import update
 from sqlalchemy.orm import Session
@@ -96,16 +96,29 @@ class SiteService:
 
     def _resolve_public_api_base_url(self, public_api_base_url: str | None = None) -> str:
         runtime_settings = load_effective_system_settings(self.db)
-        settings_url = f"{runtime_settings.public_app_url.rstrip('/')}{self.settings.api_v1_prefix}"
-        override_url = (public_api_base_url or "").strip().rstrip("/")
+        api_prefix = self.settings.api_v1_prefix.rstrip("/")
+
+        def with_api_prefix(candidate: str) -> str:
+            normalized = candidate.strip().rstrip("/")
+            if not normalized:
+                return normalized
+            parsed = urlsplit(normalized)
+            path = parsed.path.rstrip("/")
+            if path == api_prefix:
+                return normalized
+            rebuilt_path = f"{path}{api_prefix}" if path else api_prefix
+            return urlunsplit(parsed._replace(path=rebuilt_path, query="", fragment=""))
+
+        settings_url = with_api_prefix(runtime_settings.public_app_url)
+        override_url = with_api_prefix(public_api_base_url or "")
 
         def is_local(candidate: str) -> bool:
             hostname = (urlsplit(candidate).hostname or "").lower()
             return hostname in {"", "localhost", "127.0.0.1", "0.0.0.0"}
 
         resolved = settings_url
-        if override_url:
-            resolved = settings_url if is_local(override_url) and not is_local(settings_url) else override_url
+        if override_url and is_local(settings_url):
+            resolved = override_url
 
         parsed = urlsplit(resolved)
         if not parsed.scheme or not parsed.netloc:
