@@ -7,9 +7,11 @@ from collections.abc import Mapping
 from html import escape
 
 import httpx
+from sqlalchemy.orm import Session
 
 from app.config.settings import get_settings
-from app.core.security import secure_compare
+from app.core.security import decrypt_secret, secure_compare
+from app.db.session import SessionLocal
 from app.schemas.freekassa import (
     FreeKassaConfigRead,
     FreeKassaEndpointRead,
@@ -27,37 +29,56 @@ class FreeKassaService:
     payment_redirect_path = "/pay"
     api_base_url = "https://api.fk.life/v1"
 
-    def __init__(self) -> None:
+    def __init__(self, db: Session | None = None) -> None:
         self.settings = get_settings()
+        self.db = db
 
-    def build_public_config(self, public_app_url: str) -> FreeKassaConfigRead:
+    def _load_runtime_config(self, *, record=None) -> dict[str, object]:
+        local_db: Session | None = None
+        try:
+            current_record = record
+            if current_record is None:
+                db = self.db
+                if db is None:
+                    local_db = SessionLocal()
+                    db = local_db
+                from app.repositories.system_settings import SystemSettingsRepository
+
+                current_record = SystemSettingsRepository(db).get()
+
+            return {
+                "shop_id": current_record.freekassa_shop_id if current_record else None,
+                "api_key": decrypt_secret(current_record.freekassa_api_key_encrypted) if current_record else None,
+                "secret_word_2": decrypt_secret(current_record.freekassa_secret_word_2_encrypted) if current_record else None,
+                "sbp_method_id": (
+                    current_record.freekassa_sbp_method_id
+                    if current_record and current_record.freekassa_sbp_method_id is not None
+                    else 44
+                ),
+                "require_source_ip_check": self.settings.freekassa_require_source_ip_check,
+                "allowed_ips": self.settings.parsed_freekassa_allowed_ips,
+            }
+        finally:
+            if local_db is not None:
+                local_db.close()
+
+    def build_public_config(self, public_app_url: str, *, record=None) -> FreeKassaConfigRead:
+        runtime = self._load_runtime_config(record=record)
         base_url = public_app_url.strip().rstrip("/")
         endpoints = FreeKassaEndpointsRead(
             notification=FreeKassaEndpointRead(url=self._build_public_url(base_url, self.notification_path)),
             success=FreeKassaEndpointRead(url=self._build_public_url(base_url, self.success_path)),
             failure=FreeKassaEndpointRead(url=self._build_public_url(base_url, self.failure_path)),
         )
-        notes = [
-            "В кабинете FreeKassa укажи URL оповещения, успеха и неудачи из этой страницы.",
-            "Для оплаты через СБП используется API FreeKassa и метод ID СБП из настроек.",
-            "Подтверждение оплаты нужно принимать только по notification URL, а не по success URL.",
-        ]
-        if self.settings.freekassa_require_source_ip_check:
-            notes.append("Проверка IP источника уведомлений включена.")
-        if not self.settings.freekassa_secret_word_2:
-            notes.append("FREEKASSA_SECRET_WORD_2 не задан.")
-        if not self.settings.freekassa_api_key:
-            notes.append("FREEKASSA_API_KEY не задан.")
         return FreeKassaConfigRead(
-            shop_id=self.settings.freekassa_shop_id,
-            has_api_key=bool(self.settings.freekassa_api_key),
-            has_secret_word=bool(self.settings.freekassa_secret_word),
-            has_secret_word_2=bool(self.settings.freekassa_secret_word_2),
-            sbp_method_id=self.settings.freekassa_sbp_method_id,
-            require_source_ip_check=self.settings.freekassa_require_source_ip_check,
-            allowed_ips=self.settings.parsed_freekassa_allowed_ips,
+            shop_id=runtime["shop_id"],
+            has_api_key=bool(runtime["api_key"]),
+            has_secret_word_2=bool(runtime["secret_word_2"]),
+            sbp_method_id=int(runtime["sbp_method_id"]),
+            require_source_ip_check=bool(runtime["require_source_ip_check"]),
+            allowed_ips=list(runtime["allowed_ips"]),
             endpoints=endpoints,
-            notes=notes,
+            notes=[],
         )
 
     def build_payment_redirect_url(self, redirect_token: str, public_app_url: str | None = None) -> str:
@@ -68,22 +89,24 @@ class FreeKassaService:
         return self._build_public_url(public_app_url.strip().rstrip("/"), f"{self.payment_redirect_path}/{redirect_token}")
 
     def _resolve_payment_method_id(self, value: str | int) -> int:
+        runtime = self._load_runtime_config()
         if isinstance(value, int):
             return value
         if value == "sbp":
-            return self.settings.freekassa_sbp_method_id
+            return int(runtime["sbp_method_id"])
         try:
             return int(value)
         except ValueError as exc:
             raise ServiceError("Неизвестный метод оплаты FreeKassa", 400) from exc
 
     def _sign_api_payload(self, payload: Mapping[str, object]) -> str:
-        api_key = self.settings.freekassa_api_key
+        runtime = self._load_runtime_config()
+        api_key = runtime["api_key"]
         if not api_key:
-            raise ServiceError("FREEKASSA_API_KEY не настроен", 503)
+            raise ServiceError("Не настроен API ключ FreeKassa", 503)
         ordered_items = sorted((key, str(value)) for key, value in payload.items())
         raw = "|".join(value for _, value in ordered_items)
-        return hmac.new(api_key.encode("utf-8"), raw.encode("utf-8"), hashlib.sha256).hexdigest()
+        return hmac.new(str(api_key).encode("utf-8"), raw.encode("utf-8"), hashlib.sha256).hexdigest()
 
     def create_payment(
         self,
@@ -94,14 +117,15 @@ class FreeKassaService:
         payer_email: str,
         payer_ip: str | None,
     ) -> dict:
-        if self.settings.freekassa_shop_id is None:
-            raise ServiceError("FREEKASSA_SHOP_ID не настроен", 503)
+        runtime = self._load_runtime_config()
+        if runtime["shop_id"] is None:
+            raise ServiceError("Не настроен Shop ID FreeKassa", 503)
         if not payer_ip:
             raise ServiceError("Не удалось определить IP плательщика для FreeKassa", 400)
 
         amount = f"{amount_kopecks / 100:.2f}"
         payload: dict[str, object] = {
-            "shopId": self.settings.freekassa_shop_id,
+            "shopId": runtime["shop_id"],
             "nonce": time.time_ns(),
             "paymentId": merchant_order_id,
             "i": self._resolve_payment_method_id(payment_method_id),
@@ -137,9 +161,10 @@ class FreeKassaService:
         *,
         source_ip: str | None = None,
     ) -> FreeKassaNotificationRead:
-        secret_word_2 = self.settings.freekassa_secret_word_2
+        runtime = self._load_runtime_config()
+        secret_word_2 = runtime["secret_word_2"]
         if not secret_word_2:
-            raise ServiceError("FREEKASSA_SECRET_WORD_2 не настроен", 503)
+            raise ServiceError("Не настроен Secret Word 2 FreeKassa", 503)
 
         normalized = self.normalize_payload(payload)
         missing = [
@@ -150,15 +175,15 @@ class FreeKassaService:
         if missing:
             raise ServiceError(f"Отсутствуют обязательные поля FreeKassa: {', '.join(missing)}", 400)
 
-        if self.settings.freekassa_shop_id is not None:
-            expected_shop_id = str(self.settings.freekassa_shop_id)
+        if runtime["shop_id"] is not None:
+            expected_shop_id = str(runtime["shop_id"])
             if normalized["MERCHANT_ID"] != expected_shop_id:
                 raise ServiceError("Неожиданный MERCHANT_ID", 400)
 
-        if self.settings.freekassa_require_source_ip_check:
+        if bool(runtime["require_source_ip_check"]):
             if not source_ip:
                 raise ServiceError("Не удалось определить IP источника", 403)
-            if source_ip not in self.settings.parsed_freekassa_allowed_ips:
+            if source_ip not in list(runtime["allowed_ips"]):
                 raise ServiceError("Неожиданный IP источника", 403)
 
         expected_sign = hashlib.md5(

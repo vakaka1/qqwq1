@@ -4,6 +4,7 @@ from urllib.parse import urlsplit
 
 from sqlalchemy.orm import Session
 
+from app.core.security import encrypt_secret
 from app.db.session import SessionLocal
 from app.models.system_settings import SystemSettings
 from app.repositories.system_settings import SystemSettingsRepository
@@ -22,6 +23,8 @@ DEFAULT_SYSTEM_SETTINGS = {
     "three_xui_timeout_seconds": 20,
     "three_xui_verify_ssl": False,
     "bot_webhook_base_url": None,
+    "freekassa_shop_id": None,
+    "freekassa_sbp_method_id": 44,
 }
 
 
@@ -36,6 +39,8 @@ class SystemSettingsService:
         "three_xui_timeout_seconds",
         "three_xui_verify_ssl",
         "bot_webhook_base_url",
+        "freekassa_shop_id",
+        "freekassa_sbp_method_id",
     )
 
     def __init__(self, db: Session) -> None:
@@ -72,10 +77,15 @@ class SystemSettingsService:
 
         return SystemSettingsRead(
             **payload,
+            freekassa_api_key=None,
+            freekassa_secret_word_2=None,
             sources=sources,
             warnings=self._build_warnings(payload),
             updated_at=record.updated_at.isoformat() if record and record.updated_at else None,
-            freekassa=FreeKassaService().build_public_config(public_app_url=str(payload["public_app_url"])),
+            freekassa=FreeKassaService(db=self.db).build_public_config(
+                public_app_url=str(payload["public_app_url"]),
+                record=record,
+            ),
         )
 
     def get_effective(self) -> SystemSettingsRead:
@@ -103,7 +113,24 @@ class SystemSettingsService:
         record.three_xui_timeout_seconds = payload.three_xui_timeout_seconds
         record.three_xui_verify_ssl = payload.three_xui_verify_ssl
         record.bot_webhook_base_url = payload.bot_webhook_base_url
+        if "freekassa_shop_id" in payload.model_fields_set:
+            record.freekassa_shop_id = payload.freekassa_shop_id
+        if "freekassa_sbp_method_id" in payload.model_fields_set:
+            record.freekassa_sbp_method_id = payload.freekassa_sbp_method_id
+        if "freekassa_api_key" in payload.model_fields_set and payload.freekassa_api_key and payload.freekassa_api_key.strip():
+            record.freekassa_api_key_encrypted = encrypt_secret(payload.freekassa_api_key.strip())
+        if (
+            "freekassa_secret_word_2" in payload.model_fields_set
+            and payload.freekassa_secret_word_2
+            and payload.freekassa_secret_word_2.strip()
+        ):
+            record.freekassa_secret_word_2_encrypted = encrypt_secret(payload.freekassa_secret_word_2.strip())
         self.repo.save(record)
+        audit_payload = payload.model_dump()
+        audit_payload["freekassa_api_key"] = bool(payload.freekassa_api_key and payload.freekassa_api_key.strip())
+        audit_payload["freekassa_secret_word_2"] = bool(
+            payload.freekassa_secret_word_2 and payload.freekassa_secret_word_2.strip()
+        )
         self.audit.log(
             actor_type="admin",
             actor_id=actor_id,
@@ -111,7 +138,7 @@ class SystemSettingsService:
             entity_type="system_settings",
             entity_id=str(record.id),
             message="Обновлены системные настройки",
-            payload=payload.model_dump(),
+            payload=audit_payload,
         )
         self.db.commit()
         from app.tasks.scheduler import reload_scheduler
@@ -142,6 +169,10 @@ def load_effective_system_settings(db: Session | None = None) -> SystemSettingsR
             three_xui_timeout_seconds=int(DEFAULT_SYSTEM_SETTINGS["three_xui_timeout_seconds"]),
             three_xui_verify_ssl=bool(DEFAULT_SYSTEM_SETTINGS["three_xui_verify_ssl"]),
             bot_webhook_base_url=None,
+            freekassa_shop_id=None,
+            freekassa_api_key=None,
+            freekassa_secret_word_2=None,
+            freekassa_sbp_method_id=int(DEFAULT_SYSTEM_SETTINGS["freekassa_sbp_method_id"]),
             sources={field: "default" for field in SystemSettingsService.managed_fields},
             warnings=[],
             updated_at=None,

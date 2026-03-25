@@ -17,7 +17,6 @@ class FreeKassaEndpointsRead(BaseModel):
 class FreeKassaConfigRead(BaseModel):
     shop_id: int | None = None
     has_api_key: bool = False
-    has_secret_word: bool = False
     has_secret_word_2: bool = False
     sbp_method_id: int = 44
     require_source_ip_check: bool = False

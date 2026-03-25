@@ -269,7 +269,6 @@ export interface FreeKassaEndpoint {
 export interface FreeKassaSettings {
   shop_id: number | null;
   has_api_key: boolean;
-  has_secret_word: boolean;
   has_secret_word_2: boolean;
   sbp_method_id: number;
   require_source_ip_check: boolean;
@@ -292,6 +291,10 @@ export interface SystemSettings {
   three_xui_timeout_seconds: number;
   three_xui_verify_ssl: boolean;
   bot_webhook_base_url: string | null;
+  freekassa_shop_id: number | null;
+  freekassa_api_key: string | null;
+  freekassa_secret_word_2: string | null;
+  freekassa_sbp_method_id: number;
   sources: Record<string, string>;
   warnings: string[];
   updated_at: string | null;

@@ -28,6 +28,20 @@ const emptyPlanForm: PlanFormState = {
   is_active: true
 };
 
+interface FreeKassaFormState {
+  freekassa_shop_id: string;
+  freekassa_api_key: string;
+  freekassa_secret_word_2: string;
+  freekassa_sbp_method_id: string;
+}
+
+const emptyFreeKassaForm: FreeKassaFormState = {
+  freekassa_shop_id: "",
+  freekassa_api_key: "",
+  freekassa_secret_word_2: "",
+  freekassa_sbp_method_id: "44"
+};
+
 function formatMoney(kopecks: number) {
   return `${(kopecks / 100).toLocaleString("ru-RU", {
     minimumFractionDigits: 2,
@@ -63,6 +77,15 @@ function toPlanForm(plan: BillingPlan): PlanFormState {
     price_rub: (plan.price_kopecks / 100).toFixed(2),
     sort_order: String(plan.sort_order),
     is_active: plan.is_active
+  };
+}
+
+function toFreeKassaForm(settings: SystemSettings): FreeKassaFormState {
+  return {
+    freekassa_shop_id: settings.freekassa_shop_id ? String(settings.freekassa_shop_id) : "",
+    freekassa_api_key: "",
+    freekassa_secret_word_2: "",
+    freekassa_sbp_method_id: String(settings.freekassa_sbp_method_id)
   };
 }
 
@@ -419,8 +442,50 @@ function MonetizationOverviewTab() {
 }
 
 function MonetizationSettingsTab({ settings }: { settings: SystemSettings }) {
+  const { token } = useAuth();
+  const { pushToast } = useToast();
+  const queryClient = useQueryClient();
   const freekassa = settings.freekassa;
   const [provider, setProvider] = useState("freekassa");
+  const [form, setForm] = useState<FreeKassaFormState>(() => toFreeKassaForm(settings));
+
+  useEffect(() => {
+    setForm(toFreeKassaForm(settings));
+  }, [settings]);
+
+  const saveMutation = useMutation({
+    mutationFn: () =>
+      apiRequest<SystemSettings>(
+        "/system-settings/",
+        {
+          method: "PUT",
+          body: JSON.stringify({
+            app_name: settings.app_name,
+            public_app_url: settings.public_app_url,
+            trial_duration_hours: settings.trial_duration_hours,
+            site_trial_duration_hours: settings.site_trial_duration_hours,
+            site_trial_total_gb: settings.site_trial_total_gb,
+            scheduler_interval_minutes: settings.scheduler_interval_minutes,
+            three_xui_timeout_seconds: settings.three_xui_timeout_seconds,
+            three_xui_verify_ssl: settings.three_xui_verify_ssl,
+            bot_webhook_base_url: settings.bot_webhook_base_url,
+            freekassa_shop_id: form.freekassa_shop_id ? Number(form.freekassa_shop_id) : null,
+            freekassa_api_key: form.freekassa_api_key.trim() || null,
+            freekassa_secret_word_2: form.freekassa_secret_word_2.trim() || null,
+            freekassa_sbp_method_id: Number(form.freekassa_sbp_method_id)
+          })
+        },
+        token
+      ),
+    onSuccess: async (result) => {
+      setForm(toFreeKassaForm(result));
+      await queryClient.invalidateQueries({ queryKey: ["system-settings"] });
+      pushToast("Настройки FreeKassa сохранены", "success");
+    },
+    onError: (error) => {
+      pushToast(error instanceof ApiError ? error.message : "Не удалось сохранить FreeKassa", "danger");
+    }
+  });
 
   if (!freekassa || provider !== "freekassa") {
     return <div className="panel">Конфигурация FreeKassa недоступна.</div>;
@@ -428,45 +493,82 @@ function MonetizationSettingsTab({ settings }: { settings: SystemSettings }) {
 
   return (
     <section className="panel monetization-stack">
-      <div className="monetization-settings-grid">
-        <label className="monetization-settings-field">
+      <form
+        className="form-grid"
+        onSubmit={(event) => {
+          event.preventDefault();
+          saveMutation.mutate();
+        }}
+      >
+        <label>
           <span>Касса</span>
           <select value={provider} onChange={(event) => setProvider(event.target.value)}>
             <option value="freekassa">FreeKassa</option>
           </select>
         </label>
 
-        <label className="monetization-settings-field">
+        <label>
           <span>Shop ID</span>
-          <input readOnly value={String(freekassa.shop_id ?? "не задан")} />
+          <input
+            inputMode="numeric"
+            type="number"
+            min="1"
+            value={form.freekassa_shop_id}
+            onChange={(event) => setForm({ ...form, freekassa_shop_id: event.target.value })}
+          />
         </label>
 
-        <label className="monetization-settings-field">
+        <label>
           <span>API ключ</span>
-          <input readOnly value={freekassa.has_api_key ? "настроен" : "не задан"} />
+          <input
+            value={form.freekassa_api_key}
+            onChange={(event) => setForm({ ...form, freekassa_api_key: event.target.value })}
+            placeholder={freekassa.has_api_key ? "Сохранен" : ""}
+          />
         </label>
 
-        <label className="monetization-settings-field">
-          <span>Метод СБП</span>
-          <input readOnly value={`ID ${freekassa.sbp_method_id}`} />
+        <label>
+          <span>Secret Word 2</span>
+          <input
+            value={form.freekassa_secret_word_2}
+            onChange={(event) => setForm({ ...form, freekassa_secret_word_2: event.target.value })}
+            placeholder={freekassa.has_secret_word_2 ? "Сохранен" : ""}
+          />
         </label>
 
-        <label className="monetization-settings-field">
+        <label>
+          <span>ID метода СБП</span>
+          <input
+            inputMode="numeric"
+            type="number"
+            min="1"
+            value={form.freekassa_sbp_method_id}
+            onChange={(event) => setForm({ ...form, freekassa_sbp_method_id: event.target.value })}
+            required
+          />
+        </label>
+
+        <label>
           <span>URL оповещения</span>
           <input readOnly value={freekassa.endpoints.notification.url} />
         </label>
 
-        <label className="monetization-settings-field">
+        <label>
           <span>URL успешной оплаты</span>
           <input readOnly value={freekassa.endpoints.success.url} />
         </label>
 
-        <label className="monetization-settings-field">
-          <span>URL возврата в случае неудачи</span>
+        <label>
+          <span>URL неудачи</span>
           <input readOnly value={freekassa.endpoints.failure.url} />
         </label>
-      </div>
 
+        <div className="modal-footer">
+          <button className="primary-button" disabled={saveMutation.isPending} type="submit">
+            {saveMutation.isPending ? "Сохраняем..." : "Сохранить"}
+          </button>
+        </div>
+      </form>
     </section>
   );
 }

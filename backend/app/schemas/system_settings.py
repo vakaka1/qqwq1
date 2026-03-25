@@ -17,6 +17,10 @@ class SystemSettingsPayload(BaseModel):
     three_xui_timeout_seconds: int = Field(ge=1, le=300)
     three_xui_verify_ssl: bool = False
     bot_webhook_base_url: str | None = Field(default=None, max_length=255)
+    freekassa_shop_id: int | None = Field(default=None, ge=1)
+    freekassa_api_key: str | None = Field(default=None, max_length=512)
+    freekassa_secret_word_2: str | None = Field(default=None, max_length=255)
+    freekassa_sbp_method_id: int = Field(default=44, ge=1, le=999)
 
     @model_validator(mode="after")
     def validate_urls(self) -> "SystemSettingsPayload":
