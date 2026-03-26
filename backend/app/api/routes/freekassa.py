@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.services.audit import AuditService
-from app.services.freekassa import FreeKassaService
 from app.services.exceptions import ServiceError
+from app.services.freekassa import FreeKassaService
 from app.services.monetization import MonetizationService
 
 router = APIRouter()
@@ -46,13 +46,13 @@ async def freekassa_notify(request: Request, db: Session = Depends(get_db)) -> P
     return PlainTextResponse("YES")
 
 
-@router.get("/pay/{payment_token}")
-def freekassa_redirect(payment_token: str, request: Request, db: Session = Depends(get_db)):
+@router.get("/pay/{payment_token}", response_class=HTMLResponse)
+def freekassa_redirect(payment_token: str, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     service = FreeKassaService()
     monetization = MonetizationService(db)
     source_ip = service.resolve_source_ip(request.headers, request.client.host if request.client else None)
     try:
-        redirect_url = monetization.prepare_payment_redirect(payment_token, source_ip=source_ip)
+        payment_page = monetization.prepare_payment_page(payment_token, source_ip=source_ip)
     except ServiceError as exc:
         return HTMLResponse(
             service.render_error_page(
@@ -62,7 +62,18 @@ def freekassa_redirect(payment_token: str, request: Request, db: Session = Depen
             ),
             status_code=exc.status_code,
         )
-    return RedirectResponse(url=redirect_url, status_code=307)
+    return HTMLResponse(
+        service.render_payment_page(
+            brand_name=str(payment_page["brand_name"]),
+            order_id=str(payment_page["order_id"]),
+            amount_rub=str(payment_page["amount_rub"]),
+            payment_method_label=str(payment_page["payment_method_label"]),
+            payment_url=str(payment_page["payment_url"]) if payment_page["payment_url"] else None,
+            bot_name=str(payment_page["bot_name"]) if payment_page["bot_name"] else None,
+            plan_name=str(payment_page["plan_name"]) if payment_page["plan_name"] else None,
+            is_paid=bool(payment_page["is_paid"]),
+        )
+    )
 
 
 @router.post("/success", response_class=HTMLResponse)

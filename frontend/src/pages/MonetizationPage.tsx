@@ -565,16 +565,27 @@ function MonetizationSettingsTab({ settings }: { settings: SystemSettings }) {
           </label>
 
           <label>
-            <span>ID метода СБП</span>
-            <input
-              inputMode="numeric"
-              type="number"
-              min="1"
+            <span>Метод СБП</span>
+            <select
               value={form.freekassa_sbp_method_id}
               onChange={(event) => setForm({ ...form, freekassa_sbp_method_id: event.target.value })}
-              required
-            />
+            >
+              <option value="42">42 - СБП</option>
+              <option value="44">44 - СБП (API)</option>
+            </select>
           </label>
+
+          <div className="full-width inline-note">
+            Для обычного СБП оставьте 42. Метод 44 использует отдельный API-сценарий FreeKassa.
+          </div>
+
+          {freekassa.notes.length > 0 ? (
+            <div className="full-width inline-note">
+              {freekassa.notes.map((note) => (
+                <div key={note}>{note}</div>
+              ))}
+            </div>
+          ) : null}
 
           <label>
             <span>URL оповещения</span>

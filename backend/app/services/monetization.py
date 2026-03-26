@@ -173,6 +173,13 @@ class MonetizationService:
     def _build_telegram_payer_email(self, telegram_user_id: int) -> str:
         return f"telegram-user-{telegram_user_id}@example.com"
 
+    @staticmethod
+    def _payment_method_label(value: str | None) -> str:
+        if not value:
+            return "Онлайн-оплата"
+        labels = {"sbp": "СБП"}
+        return labels.get(value.lower(), value.upper())
+
     def _create_wallet_transaction(
         self,
         *,
@@ -415,6 +422,28 @@ class MonetizationService:
         )
         self.db.commit()
         return payment.provider_payment_url
+
+    def prepare_payment_page(self, payment_token: str, *, source_ip: str | None) -> dict[str, object]:
+        payment = self.payments.get_by_redirect_token(payment_token)
+        if not payment:
+            raise ServiceError("Платеж не найден", 404)
+
+        if payment.status != "paid":
+            self.prepare_payment_redirect(payment_token, source_ip=source_ip)
+            payment = self.payments.get_by_redirect_token(payment_token) or payment
+
+        effective_settings = load_effective_system_settings(self.db)
+        brand_name = (effective_settings.app_name or "").strip() or (payment.managed_bot.name if payment.managed_bot else "Оплата")
+        return {
+            "brand_name": brand_name,
+            "order_id": payment.merchant_order_id,
+            "amount_rub": self.format_kopecks(payment.amount_kopecks),
+            "payment_url": None if payment.status == "paid" else payment.provider_payment_url,
+            "payment_method_label": self._payment_method_label(payment.payment_method),
+            "bot_name": payment.managed_bot.name if payment.managed_bot else None,
+            "plan_name": payment.billing_plan.name if payment.billing_plan else None,
+            "is_paid": payment.status == "paid",
+        }
 
     def apply_successful_payment_notification(self, notification) -> Payment:
         payment = self.payments.get_by_merchant_order_id(notification.merchant_order_id)

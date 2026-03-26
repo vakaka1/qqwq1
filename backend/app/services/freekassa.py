@@ -23,6 +23,8 @@ from app.services.exceptions import ServiceError
 
 
 class FreeKassaService:
+    classic_sbp_method_id = 42
+    api_sbp_method_id = 44
     router_prefix = "/freekassa"
     notification_path = "/notify"
     success_path = "/success"
@@ -62,7 +64,7 @@ class FreeKassaService:
                 "sbp_method_id": (
                     current_record.freekassa_sbp_method_id
                     if current_record and current_record.freekassa_sbp_method_id is not None
-                    else 42
+                    else self.classic_sbp_method_id
                 ),
                 "require_source_ip_check": self.settings.freekassa_require_source_ip_check,
                 "allowed_ips": self.settings.parsed_freekassa_allowed_ips,
@@ -73,22 +75,26 @@ class FreeKassaService:
 
     def build_public_config(self, public_app_url: str, *, record=None) -> FreeKassaConfigRead:
         runtime = self._load_runtime_config(record=record)
+        sbp_method_id = int(runtime["sbp_method_id"])
         base_url = self._resolve_public_url(public_app_url, runtime=runtime)
         endpoints = FreeKassaEndpointsRead(
             notification=FreeKassaEndpointRead(url=self._build_public_url(base_url, self.notification_path)),
             success=FreeKassaEndpointRead(url=self._build_public_url(base_url, self.success_path)),
             failure=FreeKassaEndpointRead(url=self._build_public_url(base_url, self.failure_path)),
         )
+        notes: list[str] = []
+        if sbp_method_id == self.api_sbp_method_id:
+            notes.append("Выбран метод 44 — СБП (API). Для классического СБП-редиректа используйте 42.")
         return FreeKassaConfigRead(
             shop_id=runtime["shop_id"],
             has_secret_word=bool(runtime["secret_word"]),
             has_api_key=bool(runtime["api_key"]),
             has_secret_word_2=bool(runtime["secret_word_2"]),
-            sbp_method_id=int(runtime["sbp_method_id"]),
+            sbp_method_id=sbp_method_id,
             require_source_ip_check=bool(runtime["require_source_ip_check"]),
             allowed_ips=list(runtime["allowed_ips"]),
             endpoints=endpoints,
-            notes=[],
+            notes=notes,
         )
 
     def build_payment_redirect_url(self, redirect_token: str, public_app_url: str | None = None) -> str:
@@ -110,8 +116,8 @@ class FreeKassaService:
             return value
         if value == "sbp":
             configured_method_id = runtime["sbp_method_id"]
-            if configured_method_id is None or int(configured_method_id) == 44:
-                return 42
+            if configured_method_id is None:
+                return self.classic_sbp_method_id
             return int(configured_method_id)
         try:
             return int(value)
@@ -123,14 +129,12 @@ class FreeKassaService:
         if isinstance(value, int):
             return [value]
         if value == "sbp":
-            candidates: list[int] = []
-            for candidate in (runtime["sbp_method_id"], 42, 44):
-                if candidate is None:
-                    continue
-                method_id = int(candidate)
-                if method_id not in candidates:
-                    candidates.append(method_id)
-            return candidates
+            configured_method_id = runtime["sbp_method_id"]
+            if configured_method_id is None:
+                return [self.classic_sbp_method_id]
+            # Keep symbolic SBP pinned to the configured method and avoid silent
+            # fallback into a different provider flow.
+            return [int(configured_method_id)]
         try:
             return [int(value)]
         except ValueError as exc:
@@ -328,6 +332,87 @@ class FreeKassaService:
             if raw_value:
                 return raw_value.split(",")[0].strip()
         return client_host
+
+    def render_payment_page(
+        self,
+        *,
+        brand_name: str,
+        order_id: str,
+        amount_rub: str,
+        payment_method_label: str,
+        payment_url: str | None,
+        bot_name: str | None = None,
+        plan_name: str | None = None,
+        is_paid: bool = False,
+    ) -> str:
+        safe_brand = escape(brand_name)
+        safe_order_id = escape(order_id)
+        safe_amount = escape(amount_rub)
+        safe_method = escape(payment_method_label)
+        safe_bot = escape(bot_name) if bot_name else "Telegram-бот"
+        safe_plan = escape(plan_name) if plan_name else "Пополнение баланса"
+        safe_payment_url = escape(payment_url, quote=True) if payment_url else None
+        status_title = "Платеж уже зачислен" if is_paid else "Подтвердите оплату"
+        status_message = (
+            "Этот платеж уже был успешно обработан. Можно вернуться в бот и проверить баланс."
+            if is_paid
+            else "Вы открыли персональную платежную ссылку. Нажмите кнопку ниже - откроется страница оплаты по СБП."
+        )
+        primary_action = (
+            f'<a class="primary" href="{safe_payment_url}" rel="noreferrer noopener">Оплатить по СБП</a>'
+            if safe_payment_url
+            else ""
+        )
+        auto_redirect = (
+            f'<meta http-equiv="refresh" content="2;url={safe_payment_url}">'
+            if safe_payment_url
+            else ""
+        )
+        auto_redirect_note = (
+            "Если страница оплаты не открылась автоматически, используйте кнопку выше."
+            if safe_payment_url
+            else "Платежная ссылка уже не требуется."
+        )
+        return f"""<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    {auto_redirect}
+    <title>{safe_brand} - оплата</title>
+    <style>
+      body {{ margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 24px; background: radial-gradient(circle at top left, rgba(15,118,110,.14), transparent 34%), linear-gradient(180deg, #f5f8fc 0%, #dce8f7 100%); font-family: Manrope, system-ui, sans-serif; color: #0f172a; }}
+      main {{ width: min(760px, 100%); padding: 34px; border-radius: 32px; border: 1px solid rgba(148,163,184,.25); background: rgba(255,255,255,.95); box-shadow: 0 24px 70px rgba(15,23,42,.14); }}
+      .eyebrow {{ display: inline-block; padding: 10px 14px; border-radius: 999px; background: rgba(15,118,110,.1); color: #0f766e; font-size: 12px; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; }}
+      h1 {{ margin: 18px 0 12px; font-size: clamp(2.5rem, 6vw, 4.2rem); line-height: .94; letter-spacing: -.07em; }}
+      p {{ margin: 0; color: #526076; line-height: 1.7; }}
+      .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; margin-top: 24px; }}
+      .tile {{ padding: 16px 18px; border-radius: 22px; background: #f8fafc; border: 1px solid rgba(203,213,225,.8); }}
+      .tile span {{ display: block; color: #64748b; font-size: .82rem; margin-bottom: 8px; }}
+      .tile strong {{ display: block; font-size: 1rem; line-height: 1.45; word-break: break-word; }}
+      .actions {{ margin-top: 24px; }}
+      .primary {{ display: inline-flex; align-items: center; justify-content: center; min-height: 56px; padding: 0 24px; border-radius: 18px; background: linear-gradient(135deg, #0f766e, #0b5ed7); color: #fff; text-decoration: none; font-weight: 700; }}
+      .note {{ margin-top: 18px; padding: 16px 18px; border-radius: 20px; background: linear-gradient(135deg, rgba(15,118,110,.08), rgba(11,94,215,.08)); }}
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="eyebrow">Secure payment</div>
+      <h1>{escape(status_title)}</h1>
+      <p>{escape(status_message)}</p>
+      <div class="grid">
+        <section class="tile"><span>Бренд</span><strong>{safe_brand}</strong></section>
+        <section class="tile"><span>Сумма</span><strong>{safe_amount} RUB</strong></section>
+        <section class="tile"><span>Метод</span><strong>{safe_method}</strong></section>
+        <section class="tile"><span>Заказ</span><strong>{safe_order_id}</strong></section>
+        <section class="tile"><span>Источник</span><strong>{safe_bot}</strong></section>
+        <section class="tile"><span>Назначение</span><strong>{safe_plan}</strong></section>
+      </div>
+      <div class="actions">{primary_action}</div>
+      <div class="note">{escape(auto_redirect_note)}</div>
+    </main>
+  </body>
+</html>"""
 
     def render_return_page(self, *, outcome: str, payload: Mapping[str, str]) -> str:
         normalized = self.normalize_payload(payload)

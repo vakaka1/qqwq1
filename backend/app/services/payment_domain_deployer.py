@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shlex
+from html import escape
 
 from app.schemas.payment_domain import PaymentDomainDeploymentPlanRead
 from app.schemas.site import SiteConnectionPayload
@@ -10,32 +11,208 @@ from app.services.site_deployer import SiteDeployer
 
 
 class PaymentDomainDeployer(SiteDeployer):
+    def _static_root(self, *, plan: PaymentDomainDeploymentPlanRead) -> str:
+        return f"{plan.remote_root}/www"
+
     def _build_nginx_config(self, *, plan: PaymentDomainDeploymentPlanRead) -> str:
         upstream = f"{plan.backend_api_base_url.rstrip('/')}/freekassa/"
-        return (
-            "server {\n"
-            "    listen 80;\n"
-            f"    server_name {plan.domain};\n\n"
-            "    location /api/v1/freekassa/ {\n"
-            f"        proxy_pass {upstream};\n"
-            "        proxy_http_version 1.1;\n"
-            "        proxy_set_header Host $host;\n"
-            "        proxy_set_header X-Real-IP $remote_addr;\n"
-            "        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n"
-            "        proxy_set_header X-Forwarded-Proto $scheme;\n"
-            "        proxy_set_header X-Forwarded-Host $host;\n"
-            "        proxy_set_header X-Forwarded-Port $server_port;\n"
-            "        proxy_ssl_server_name on;\n"
-            "        proxy_read_timeout 60s;\n"
-            "    }\n\n"
-            "    location = /healthz {\n"
-            "        default_type text/plain;\n"
-            "        return 200 'ok';\n"
-            "    }\n\n"
-            "    location / {\n"
-            "        return 404;\n"
-            "    }\n"
-            "}\n"
+        static_root = self._static_root(plan=plan)
+        return f"""
+server {{
+    listen 80;
+    server_name {plan.domain};
+    charset utf-8;
+    root {static_root};
+    index index.html;
+    error_page 404 /404.html;
+
+    location /api/v1/freekassa/ {{
+        proxy_pass {upstream};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Port $server_port;
+        proxy_ssl_server_name on;
+        proxy_read_timeout 60s;
+    }}
+
+    location = /healthz {{
+        default_type text/plain;
+        return 200 'ok';
+    }}
+
+    location = /favicon.ico {{
+        return 204;
+    }}
+
+    location = /404.html {{
+        internal;
+    }}
+
+    location = / {{
+        try_files /index.html =404;
+    }}
+
+    location / {{
+        try_files $uri $uri/ =404;
+    }}
+}}
+""".strip() + "\n"
+
+    def _render_static_page(
+        self,
+        *,
+        title: str,
+        eyebrow: str,
+        message: str,
+        detail: str,
+        domain: str,
+        status_label: str,
+        action_label: str | None = None,
+        action_href: str | None = None,
+    ) -> str:
+        safe_title = escape(title)
+        safe_eyebrow = escape(eyebrow)
+        safe_message = escape(message)
+        safe_detail = escape(detail)
+        safe_domain = escape(domain)
+        safe_status = escape(status_label)
+        action_markup = ""
+        if action_label and action_href:
+            action_markup = f'<a class="primary" href="{escape(action_href, quote=True)}">{escape(action_label)}</a>'
+        return f"""<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{safe_title}</title>
+    <style>
+      body {{
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+        background: radial-gradient(circle at top left, rgba(15,118,110,.14), transparent 34%), linear-gradient(180deg, #f5f8fc 0%, #dce8f7 100%);
+        font-family: Manrope, system-ui, sans-serif;
+        color: #0f172a;
+      }}
+      main {{
+        width: min(720px, 100%);
+        padding: 32px;
+        border-radius: 30px;
+        border: 1px solid rgba(148,163,184,.25);
+        background: rgba(255,255,255,.94);
+        box-shadow: 0 24px 70px rgba(15,23,42,.14);
+      }}
+      .eyebrow {{
+        display: inline-block;
+        padding: 10px 14px;
+        border-radius: 999px;
+        background: rgba(15,118,110,.1);
+        color: #0f766e;
+        font-size: 12px;
+        font-weight: 800;
+        letter-spacing: .14em;
+        text-transform: uppercase;
+      }}
+      h1 {{
+        margin: 18px 0 12px;
+        font-size: clamp(2.4rem, 6vw, 4rem);
+        line-height: .94;
+        letter-spacing: -.07em;
+      }}
+      p {{
+        margin: 0;
+        color: #526076;
+        line-height: 1.7;
+      }}
+      .grid {{
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 14px;
+        margin-top: 24px;
+      }}
+      .tile {{
+        padding: 16px 18px;
+        border-radius: 22px;
+        background: #f8fafc;
+        border: 1px solid rgba(203,213,225,.8);
+      }}
+      .tile span {{
+        display: block;
+        color: #64748b;
+        font-size: .82rem;
+        margin-bottom: 8px;
+      }}
+      .tile strong {{
+        display: block;
+        font-size: 1rem;
+        line-height: 1.45;
+        word-break: break-word;
+      }}
+      .note {{
+        margin-top: 22px;
+        padding: 18px 20px;
+        border-radius: 24px;
+        background: linear-gradient(135deg, rgba(15,118,110,.08), rgba(11,94,215,.08));
+      }}
+      .actions {{
+        margin-top: 22px;
+      }}
+      .primary {{
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 52px;
+        padding: 0 20px;
+        border-radius: 16px;
+        background: linear-gradient(135deg, #0f766e, #0b5ed7);
+        color: #fff;
+        text-decoration: none;
+        font-weight: 700;
+      }}
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="eyebrow">{safe_eyebrow}</div>
+      <h1>{safe_title}</h1>
+      <p>{safe_message}</p>
+      <div class="grid">
+        <section class="tile"><span>Домен</span><strong>{safe_domain}</strong></section>
+        <section class="tile"><span>Назначение</span><strong>Платежный шлюз и страницы оплаты</strong></section>
+        <section class="tile"><span>Статус</span><strong>{safe_status}</strong></section>
+      </div>
+      <div class="note">{safe_detail}</div>
+      <div class="actions">{action_markup}</div>
+    </main>
+  </body>
+</html>"""
+
+    def _build_index_page(self, *, plan: PaymentDomainDeploymentPlanRead) -> str:
+        return self._render_static_page(
+            title="Безопасная оплата",
+            eyebrow="Payment domain",
+            message="Это выделенный домен оплаты. Обычно сюда попадают по персональной ссылке из Telegram-бота перед оплатой по СБП.",
+            detail="Если вы открыли адрес вручную, вернитесь в бота и перейдите по персональной ссылке оплаты. Корневой адрес домена служит только витриной и не открывает чужие счета.",
+            domain=plan.domain,
+            status_label="Готов к оплате",
+        )
+
+    def _build_not_found_page(self, *, plan: PaymentDomainDeploymentPlanRead) -> str:
+        return self._render_static_page(
+            title="404",
+            eyebrow="Page not found",
+            message="На этом платежном домене нет страницы по указанному адресу.",
+            detail="Рабочие ссылки на оплату формируются автоматически и содержат путь /api/v1/freekassa/pay/<token>. Для нового платежа используйте ссылку из Telegram-бота.",
+            domain=plan.domain,
+            status_label="Страница не найдена",
+            action_label="На главную",
+            action_href="/",
         )
 
     def _build_deployment_metadata(self, *, plan: PaymentDomainDeploymentPlanRead) -> str:
@@ -47,7 +224,7 @@ class PaymentDomainDeployer(SiteDeployer):
             "nginx_config_path": plan.nginx_config_path,
             "ssl_mode": plan.ssl_mode,
         }
-        return json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+        return json.dumps(payload, ensure_ascii=False, indent=2) + chr(10)
 
     def deploy(
         self,
@@ -72,28 +249,35 @@ class PaymentDomainDeployer(SiteDeployer):
             nginx_temp = f"{temp_root}/{plan.service_name}.conf"
             metadata_temp = f"{temp_root}/deployment.json"
             readme_temp = f"{temp_root}/README.txt"
+            index_temp = f"{temp_root}/index.html"
+            not_found_temp = f"{temp_root}/404.html"
+            static_root = self._static_root(plan=plan)
 
             self._run(client, f"mkdir -p {shlex.quote(temp_root)}", connection=effective_connection)
             self._upload_text(client, nginx_temp, self._build_nginx_config(plan=plan))
             self._upload_text(client, metadata_temp, self._build_deployment_metadata(plan=plan))
+            self._upload_text(client, index_temp, self._build_index_page(plan=plan))
+            self._upload_text(client, not_found_temp, self._build_not_found_page(plan=plan))
             self._upload_text(
                 client,
                 readme_temp,
-                (
-                    "Managed payment domain reverse proxy for FreeKassa.\n"
-                    f"Domain: {plan.domain}\n"
-                    f"Backend API: {plan.backend_api_base_url}\n"
-                    f"Nginx config: {plan.nginx_config_path}\n"
-                ),
+                f"""Managed payment domain reverse proxy for FreeKassa.
+Domain: {plan.domain}
+Backend API: {plan.backend_api_base_url}
+Nginx config: {plan.nginx_config_path}
+Static pages: {static_root}
+""",
             )
 
             try:
                 self._run(
                     client,
                     (
-                        f"mkdir -p {shlex.quote(plan.remote_root)} && "
+                        f"mkdir -p {shlex.quote(plan.remote_root)} {shlex.quote(static_root)} && "
                         f"install -m 0644 {shlex.quote(metadata_temp)} {shlex.quote(f'{plan.remote_root}/deployment.json')} && "
-                        f"install -m 0644 {shlex.quote(readme_temp)} {shlex.quote(f'{plan.remote_root}/README.txt')}"
+                        f"install -m 0644 {shlex.quote(readme_temp)} {shlex.quote(f'{plan.remote_root}/README.txt')} && "
+                        f"install -m 0644 {shlex.quote(index_temp)} {shlex.quote(f'{static_root}/index.html')} && "
+                        f"install -m 0644 {shlex.quote(not_found_temp)} {shlex.quote(f'{static_root}/404.html')}"
                     ),
                     connection=effective_connection,
                     use_sudo=True,
