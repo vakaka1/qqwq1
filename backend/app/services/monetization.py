@@ -349,24 +349,23 @@ class MonetizationService:
             },
         )
         buyer_email = self._build_telegram_payer_email(user.telegram_user_id)
-        payment.payer_email = buyer_email
-        payment.provider_payment_url = self.freekassa.build_checkout_url(
-            merchant_order_id=payment.merchant_order_id,
-            amount_kopecks=payment.amount_kopecks,
-            payment_method_id=payment.payment_method,
-            payer_email=buyer_email,
+        effective_settings = load_effective_system_settings(self.db)
+        payment_redirect_url = self.freekassa.build_payment_redirect_url(
+            payment.redirect_token,
+            public_app_url=effective_settings.freekassa_public_url or effective_settings.public_app_url,
         )
+        payment.payer_email = buyer_email
         payment.provider_response = {
-            "checkout": "sci",
-            "checkout_base_url": "https://pay.fk.money/",
-            "location": payment.provider_payment_url,
+            "checkout": "freekassa_api_redirect",
+            "payment_redirect_url": payment_redirect_url,
+            "provider_payment_url": None,
         }
         self.db.commit()
         return BotPaymentRead(
             payment_id=payment.id,
             amount_kopecks=payment.amount_kopecks,
             amount_rub=self.format_kopecks(payment.amount_kopecks),
-            payment_url=payment.provider_payment_url,
+            payment_url=payment_redirect_url,
             status=payment.status,
             provider=payment.provider,
             payment_method=payment.payment_method,
@@ -382,19 +381,28 @@ class MonetizationService:
             return payment.provider_payment_url
 
         buyer_email = payment.payer_email or self._build_telegram_payer_email(payment.telegram_user.telegram_user_id)
-        provider_payment_url = self.freekassa.build_checkout_url(
+        provider_response = self.freekassa.create_payment(
             merchant_order_id=payment.merchant_order_id,
             amount_kopecks=payment.amount_kopecks,
             payment_method_id=payment.payment_method,
             payer_email=buyer_email,
+            payer_ip=source_ip,
         )
+        provider_payment_url = str(provider_response.get("location") or "").strip()
+        if not provider_payment_url:
+            raise ServiceError("FreeKassa не вернула ссылку на оплату", 502)
+
+        external_order_id = provider_response.get("orderId")
+        payment.status = "created"
         payment.source_ip = source_ip
         payment.payer_email = buyer_email
+        payment.external_order_id = str(external_order_id) if external_order_id is not None else payment.external_order_id
         payment.provider_payment_url = provider_payment_url
         payment.provider_response = {
-            "checkout": "sci",
-            "checkout_base_url": "https://pay.fk.money/",
-            "location": provider_payment_url,
+            **provider_response,
+            "checkout": "freekassa_api",
+            "provider_payment_url": provider_payment_url,
+            "payer_ip": source_ip,
         }
         self.audit.log(
             actor_type="bot",
@@ -402,12 +410,10 @@ class MonetizationService:
             event_type="top_up_payment_redirect_prepared",
             entity_type="payment",
             entity_id=payment.id,
-            message="Подготовлена ссылка FreeKassa для пополнения",
+            message="Создан заказ FreeKassa и подготовлен redirect на оплату",
             payload={"source_ip": source_ip, "provider_response": payment.provider_response},
         )
         self.db.commit()
-        if not payment.provider_payment_url:
-            raise ServiceError("FreeKassa не вернула ссылку на оплату", 502)
         return payment.provider_payment_url
 
     def apply_successful_payment_notification(self, notification) -> Payment:

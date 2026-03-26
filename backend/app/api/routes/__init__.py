@@ -11,6 +11,7 @@ from app.api.routes import (
     freekassa,
     logs,
     monetization,
+    payment_domains,
     servers,
     site_runtime,
     sites,
@@ -26,6 +27,7 @@ api_router.include_router(freekassa.router, prefix="/freekassa", tags=["freekass
 api_router.include_router(bots.router, prefix="/bots", tags=["bots"])
 api_router.include_router(servers.router, prefix="/servers", tags=["servers"])
 api_router.include_router(sites.router, prefix="/sites", tags=["sites"])
+api_router.include_router(payment_domains.router, prefix="/payment-domains", tags=["payment-domains"])
 api_router.include_router(users.router, prefix="/users", tags=["users"])
 api_router.include_router(accesses.router, prefix="/accesses", tags=["accesses"])
 api_router.include_router(logs.router, prefix="/logs", tags=["logs"])

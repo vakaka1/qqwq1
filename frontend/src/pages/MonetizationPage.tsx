@@ -4,6 +4,7 @@ import { NavLink, useLocation } from "react-router-dom";
 
 import { apiRequest, ApiError } from "../api/http";
 import { Modal } from "../components/Modal";
+import { PaymentDomainManager } from "../components/PaymentDomainManager";
 import { useToast } from "../components/ToastProvider";
 import { useAuth } from "../features/auth/AuthProvider";
 import type { BillingPlan, ManagedBot, MonetizationSummary, SystemSettings } from "../lib/types";
@@ -500,102 +501,106 @@ function MonetizationSettingsTab({ settings }: { settings: SystemSettings }) {
   }
 
   return (
-    <section className="panel monetization-stack">
-      <form
-        className="form-grid"
-        onSubmit={(event) => {
-          event.preventDefault();
-          saveMutation.mutate();
-        }}
-      >
-        <label>
-          <span>Касса</span>
-          <select value={provider} onChange={(event) => setProvider(event.target.value)}>
-            <option value="freekassa">FreeKassa</option>
-          </select>
-        </label>
+    <>
+      <section className="panel monetization-stack">
+        <form
+          className="form-grid"
+          onSubmit={(event) => {
+            event.preventDefault();
+            saveMutation.mutate();
+          }}
+        >
+          <label>
+            <span>Касса</span>
+            <select value={provider} onChange={(event) => setProvider(event.target.value)}>
+              <option value="freekassa">FreeKassa</option>
+            </select>
+          </label>
 
-        <label>
-          <span>Shop ID</span>
-          <input
-            inputMode="numeric"
-            type="number"
-            min="1"
-            value={form.freekassa_shop_id}
-            onChange={(event) => setForm({ ...form, freekassa_shop_id: event.target.value })}
-          />
-        </label>
+          <label>
+            <span>Shop ID</span>
+            <input
+              inputMode="numeric"
+              type="number"
+              min="1"
+              value={form.freekassa_shop_id}
+              onChange={(event) => setForm({ ...form, freekassa_shop_id: event.target.value })}
+            />
+          </label>
 
-        <label>
-          <span>Публичный URL платежей</span>
-          <input
-            value={form.freekassa_public_url}
-            onChange={(event) => setForm({ ...form, freekassa_public_url: event.target.value })}
-            placeholder="https://pay.example.com"
-          />
-        </label>
+          <label>
+            <span>Публичный URL платежей</span>
+            <input
+              value={form.freekassa_public_url}
+              onChange={(event) => setForm({ ...form, freekassa_public_url: event.target.value })}
+              placeholder="https://pay.example.com"
+            />
+          </label>
 
-        <label>
-          <span>Secret Word</span>
-          <input
-            value={form.freekassa_secret_word}
-            onChange={(event) => setForm({ ...form, freekassa_secret_word: event.target.value })}
-            placeholder={freekassa.has_secret_word ? "Сохранен" : ""}
-          />
-        </label>
+          <label>
+            <span>Secret Word</span>
+            <input
+              value={form.freekassa_secret_word}
+              onChange={(event) => setForm({ ...form, freekassa_secret_word: event.target.value })}
+              placeholder={freekassa.has_secret_word ? "Сохранен" : ""}
+            />
+          </label>
 
-        <label>
-          <span>API ключ</span>
-          <input
-            value={form.freekassa_api_key}
-            onChange={(event) => setForm({ ...form, freekassa_api_key: event.target.value })}
-            placeholder={freekassa.has_api_key ? "Сохранен" : ""}
-          />
-        </label>
+          <label>
+            <span>API ключ</span>
+            <input
+              value={form.freekassa_api_key}
+              onChange={(event) => setForm({ ...form, freekassa_api_key: event.target.value })}
+              placeholder={freekassa.has_api_key ? "Сохранен" : ""}
+            />
+          </label>
 
-        <label>
-          <span>Secret Word 2</span>
-          <input
-            value={form.freekassa_secret_word_2}
-            onChange={(event) => setForm({ ...form, freekassa_secret_word_2: event.target.value })}
-            placeholder={freekassa.has_secret_word_2 ? "Сохранен" : ""}
-          />
-        </label>
+          <label>
+            <span>Secret Word 2</span>
+            <input
+              value={form.freekassa_secret_word_2}
+              onChange={(event) => setForm({ ...form, freekassa_secret_word_2: event.target.value })}
+              placeholder={freekassa.has_secret_word_2 ? "Сохранен" : ""}
+            />
+          </label>
 
-        <label>
-          <span>ID метода СБП</span>
-          <input
-            inputMode="numeric"
-            type="number"
-            min="1"
-            value={form.freekassa_sbp_method_id}
-            onChange={(event) => setForm({ ...form, freekassa_sbp_method_id: event.target.value })}
-            required
-          />
-        </label>
+          <label>
+            <span>ID метода СБП</span>
+            <input
+              inputMode="numeric"
+              type="number"
+              min="1"
+              value={form.freekassa_sbp_method_id}
+              onChange={(event) => setForm({ ...form, freekassa_sbp_method_id: event.target.value })}
+              required
+            />
+          </label>
 
-        <label>
-          <span>URL оповещения</span>
-          <input readOnly value={freekassa.endpoints.notification.url} />
-        </label>
+          <label>
+            <span>URL оповещения</span>
+            <input readOnly value={freekassa.endpoints.notification.url} />
+          </label>
 
-        <label>
-          <span>URL успешной оплаты</span>
-          <input readOnly value={freekassa.endpoints.success.url} />
-        </label>
+          <label>
+            <span>URL успешной оплаты</span>
+            <input readOnly value={freekassa.endpoints.success.url} />
+          </label>
 
-        <label>
-          <span>URL неудачи</span>
-          <input readOnly value={freekassa.endpoints.failure.url} />
-        </label>
+          <label>
+            <span>URL неудачи</span>
+            <input readOnly value={freekassa.endpoints.failure.url} />
+          </label>
 
-        <div className="modal-footer">
-          <button className="primary-button" disabled={saveMutation.isPending} type="submit">
-            {saveMutation.isPending ? "Сохраняем..." : "Сохранить"}
-          </button>
-        </div>
-      </form>
-    </section>
+          <div className="modal-footer">
+            <button className="primary-button" disabled={saveMutation.isPending} type="submit">
+              {saveMutation.isPending ? "Сохраняем..." : "Сохранить"}
+            </button>
+          </div>
+        </form>
+      </section>
+
+      <PaymentDomainManager settings={settings} />
+    </>
   );
 }
 

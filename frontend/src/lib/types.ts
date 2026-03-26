@@ -189,6 +189,49 @@ export interface SiteDeleteResult {
   warnings: string[];
 }
 
+export interface PaymentDomainDeploymentPlan {
+  payment_domain_code: string;
+  service_name: string;
+  domain: string;
+  public_url: string;
+  ssl_mode: string;
+  remote_root: string;
+  nginx_config_path: string;
+  backend_api_base_url: string;
+  deploy_steps: string[];
+  warnings: string[];
+}
+
+export interface PaymentDomain {
+  id: string;
+  code: string;
+  domain: string;
+  public_url: string | null;
+  server_access_mode: string;
+  server_host: string;
+  server_port: number;
+  server_username: string;
+  deployment_status: string;
+  ssl_mode: string;
+  last_deployed_at: string | null;
+  last_error: string | null;
+  connection_snapshot: Record<string, unknown>;
+  deployment_snapshot: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+  has_password: boolean;
+}
+
+export interface PaymentDomainDeleteResult {
+  payment_domain_id: string;
+  domain: string;
+  deleted_from_admin: boolean;
+  deleted_from_server: boolean;
+  warnings: string[];
+}
+
+export type PaymentDomainConnectionProbeResult = SiteConnectionProbeResult;
+
 export interface TelegramUser {
   id: number;
   telegram_user_id: number;
