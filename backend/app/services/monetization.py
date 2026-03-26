@@ -173,12 +173,8 @@ class MonetizationService:
     def _build_telegram_payer_email(self, telegram_user_id: int) -> str:
         return f"telegram-user-{telegram_user_id}@example.com"
 
-    @staticmethod
-    def _payment_method_label(value: str | None) -> str:
-        if not value:
-            return "Онлайн-оплата"
-        labels = {"sbp": "СБП"}
-        return labels.get(value.lower(), value.upper())
+    def _payment_method_label(self, value: str | None) -> str:
+        return self.freekassa.describe_payment_method(value)
 
     def _create_wallet_transaction(
         self,

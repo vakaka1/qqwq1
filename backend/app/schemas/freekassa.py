@@ -20,6 +20,7 @@ class FreeKassaConfigRead(BaseModel):
     has_api_key: bool = False
     has_secret_word_2: bool = False
     sbp_method_id: int = 42
+    selected_method_label: str = "СБП"
     require_source_ip_check: bool = False
     allowed_ips: list[str] = Field(default_factory=list)
     endpoints: FreeKassaEndpointsRead

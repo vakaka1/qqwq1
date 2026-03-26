@@ -47,6 +47,16 @@ const emptyFreeKassaForm: FreeKassaFormState = {
   freekassa_sbp_method_id: "42"
 };
 
+const freeKassaMethodOptions = [
+  { value: "13", label: "13 - Онлайн банк" },
+  { value: "12", label: "12 - МИР" },
+  { value: "36", label: "36 - Card RUB API" },
+  { value: "42", label: "42 - СБП" },
+  { value: "44", label: "44 - СБП (API)" },
+  { value: "37", label: "37 - Google Pay" },
+  { value: "38", label: "38 - Apple Pay" }
+];
+
 function formatMoney(kopecks: number) {
   return `${(kopecks / 100).toLocaleString("ru-RU", {
     minimumFractionDigits: 2,
@@ -565,18 +575,21 @@ function MonetizationSettingsTab({ settings }: { settings: SystemSettings }) {
           </label>
 
           <label>
-            <span>Метод СБП</span>
+            <span>Метод оплаты FreeKassa</span>
             <select
               value={form.freekassa_sbp_method_id}
               onChange={(event) => setForm({ ...form, freekassa_sbp_method_id: event.target.value })}
             >
-              <option value="42">42 - СБП</option>
-              <option value="44">44 - СБП (API)</option>
+              {freeKassaMethodOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
             </select>
           </label>
 
           <div className="full-width inline-note">
-            Для обычного СБП оставьте 42. Метод 44 использует отдельный API-сценарий FreeKassa.
+            Сейчас выбран: {freekassa.selected_method_label}. Если СБП уводит в FKwallet, попробуйте 13 (Онлайн банк), 12 (МИР) или 36 (Card RUB API).
           </div>
 
           {freekassa.notes.length > 0 ? (

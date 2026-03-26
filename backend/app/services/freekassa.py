@@ -25,6 +25,15 @@ from app.services.exceptions import ServiceError
 class FreeKassaService:
     classic_sbp_method_id = 42
     api_sbp_method_id = 44
+    payment_method_labels = {
+        12: "МИР",
+        13: "Онлайн банк",
+        36: "Card RUB API",
+        37: "Google Pay",
+        38: "Apple Pay",
+        42: "СБП",
+        44: "СБП (API)",
+    }
     router_prefix = "/freekassa"
     notification_path = "/notify"
     success_path = "/success"
@@ -82,15 +91,23 @@ class FreeKassaService:
             success=FreeKassaEndpointRead(url=self._build_public_url(base_url, self.success_path)),
             failure=FreeKassaEndpointRead(url=self._build_public_url(base_url, self.failure_path)),
         )
-        notes: list[str] = []
-        if sbp_method_id == self.api_sbp_method_id:
-            notes.append("Выбран метод 44 — СБП (API). Для классического СБП-редиректа используйте 42.")
+        selected_method_label = self.describe_payment_method(sbp_method_id)
+        notes: list[str] = [
+            "FreeKassa открывает собственный hosted checkout. Даже банковские методы внутри него зависят от сценария, который вернет сам провайдер."
+        ]
+        if sbp_method_id in {self.classic_sbp_method_id, self.api_sbp_method_id}:
+            notes.append("Методы 42 и 44 могут вести в FKwallet-flow, если так настроен checkout FreeKassa для вашего магазина.")
+            if sbp_method_id == self.api_sbp_method_id:
+                notes.append("Метод 44 работает через API-сценарий FreeKassa и требует отдельной проверки по магазину.")
+        elif sbp_method_id in {12, 13, 36}:
+            notes.append("Для снижения зависимости от FKwallet можно протестировать МИР, Онлайн банк или Card RUB API. Публичная документация FreeKassa описывает их только по названиям, поэтому реальный UX нужно проверять на вашем магазине.")
         return FreeKassaConfigRead(
             shop_id=runtime["shop_id"],
             has_secret_word=bool(runtime["secret_word"]),
             has_api_key=bool(runtime["api_key"]),
             has_secret_word_2=bool(runtime["secret_word_2"]),
             sbp_method_id=sbp_method_id,
+            selected_method_label=selected_method_label,
             require_source_ip_check=bool(runtime["require_source_ip_check"]),
             allowed_ips=list(runtime["allowed_ips"]),
             endpoints=endpoints,
@@ -109,6 +126,18 @@ class FreeKassaService:
         active_runtime = runtime or self._load_runtime_config()
         public_url = active_runtime.get("public_url") or fallback_public_app_url
         return str(public_url).strip().rstrip("/")
+
+    def describe_payment_method(self, value: str | int | None) -> str:
+        if value is None:
+            return "Онлайн-оплата"
+        if isinstance(value, str) and value.lower() == "sbp":
+            return self.describe_payment_method(self._resolve_checkout_method_id(value))
+        try:
+            method_id = int(value)
+        except (TypeError, ValueError):
+            text_value = str(value).strip()
+            return text_value.upper() if text_value else "Онлайн-оплата"
+        return self.payment_method_labels.get(method_id, f"FreeKassa #{method_id}")
 
     def _resolve_checkout_method_id(self, value: str | int) -> int:
         runtime = self._load_runtime_config()

@@ -315,6 +315,7 @@ export interface FreeKassaSettings {
   has_api_key: boolean;
   has_secret_word_2: boolean;
   sbp_method_id: number;
+  selected_method_label: string;
   require_source_ip_check: boolean;
   allowed_ips: string[];
   endpoints: {
